@@ -29,23 +29,20 @@ Also worth knowing:
 
 - Changes apply right away. No restart, no reload. FICSIT does not believe in downtime.
 - Your own hologram colours from the same menu are used, so valid, soft clearance and invalid placements still look different.
+- The hologram keeps everything it shows at 100%: the building's textures, paint, decals, materials and moving parts. It just fades.
 - Only the building itself fades. Connection arrows, guidelines and clearance boxes stay as they are.
 - Your choices are saved with your other game settings. The mod adds nothing to your world, so it is safe to remove at any time.
 - Client-side and visual only. Dedicated servers and other players don't need it.
 
 ## Screenshots
 
-![Foundation hologram at 100%, 75%, 50%, 25% and 0% opacity](https://raw.githubusercontent.com/projeffpalmer/HologramOpacity/main/docs/screenshots/hologram-opacity-100-75-50-25-0.png)
+![Constructor hologram at 100%, 99%, 75%, 50%, 25% and 0% opacity](https://raw.githubusercontent.com/projeffpalmer/HologramOpacity/main/docs/screenshots/constructor-opacity-100-99-75-50-25-0.png)
 
-*A foundation at 100% (vanilla), 75%, 50%, 25% and 0%. Productivity visibly unharmed.*
+*A Constructor at 100% (vanilla), 99%, 75%, 50%, 25% and 0%. Productivity visibly unharmed.*
 
-![Constructor hologram at five opacities with scanlines off](https://raw.githubusercontent.com/projeffpalmer/HologramOpacity/main/docs/screenshots/constructor-opacity-100-75-50-25-0-no-scanlines.png)
+![Constructor hologram with scanlines off at 100% and 50%](https://raw.githubusercontent.com/projeffpalmer/HologramOpacity/main/docs/screenshots/constructor-scanlines-off-100-50.png)
 
-*A Constructor at 100%, 75%, 50%, 25% and 0%, scanlines off.*
-
-![Show Scanlines on and off](https://raw.githubusercontent.com/projeffpalmer/HologramOpacity/main/docs/screenshots/scanlines-on-off-100-50-9.png)
-
-*Show Scanlines on and off, at 100%, 50% and 9%.*
+*Show Scanlines off, at 100% and 50%.*
 
 ![The two new settings in the options menu](https://raw.githubusercontent.com/projeffpalmer/HologramOpacity/main/docs/screenshots/options-show-scanlines.png)
 
