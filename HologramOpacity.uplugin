@@ -1,0 +1,40 @@
+{
+	"FileVersion": 3,
+	"Version": 2,
+	"VersionName": "1.1.0",
+	"SemVersion": "1.1.0",
+	"GameVersion": ">=517554",
+	"FriendlyName": "Hologram Opacity",
+	"Description": "Adds a working Hologram Opacity slider and a Show Scanlines checkbox to Options > User Interface > Holograms/Build Mode, so build mode holograms can be made see-through and line-free.",
+	"Category": "Modding",
+	"CreatedBy": "",
+	"CreatedByURL": "",
+	"DocsURL": "",
+	"MarketplaceURL": "",
+	"SupportURL": "",
+	"CanContainContent": true,
+	"IsBetaVersion": false,
+	"IsExperimentalVersion": false,
+	"Installed": false,
+	"BuiltInInitialFeatureState": "Active",
+	"RequiredOnRemote": false,
+	"Modules": [
+		{
+			"Name": "HologramOpacity",
+			"Type": "Runtime",
+			"LoadingPhase": "Default"
+		}
+	],
+	"Plugins": [
+		{
+			"Name": "SML",
+			"Enabled": true,
+			"SemVersion": "^3.12.0"
+		},
+		{
+			"Name": "GameFeatures",
+			"Enabled": true,
+			"BasePlugin": true
+		}
+	]
+}
