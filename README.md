@@ -1,5 +1,7 @@
 # Hologram Opacity (Satisfactory mod)
 
+<img src="docs/logo/hologram-opacity-logo.png" alt="Hologram Opacity logo" width="128" align="right">
+
 Adds a working **Hologram Opacity** slider and a **Show Scanlines** checkbox to
 **Options > User Interface > Holograms/Build Mode**, so build mode holograms can be made see-through (and line-free)
 while you place buildings.

@@ -1,0 +1,51 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="512" height="512" viewBox="0 0 512 512">
+  <title>Hologram Opacity logo</title>
+  <defs>
+    <radialGradient id="bg" cx="256" cy="220" r="380" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#1F262F"/>
+      <stop offset="1" stop-color="#0D1014"/>
+    </radialGradient>
+    <pattern id="grid" width="64" height="64" patternUnits="userSpaceOnUse">
+      <path d="M64 0H0V64" fill="none" stroke="#FFFFFF" stroke-opacity="0.05" stroke-width="2"/>
+    </pattern>
+    <pattern id="scan" width="14" height="14" patternUnits="userSpaceOnUse">
+      <rect width="14" height="14" fill="#00D3FF"/>
+      <rect y="9" width="14" height="5" fill="#0098C2"/>
+    </pattern>
+    <radialGradient id="glow" cx="190" cy="300" r="210" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#00D3FF" stop-opacity="0.2"/>
+      <stop offset="1" stop-color="#00D3FF" stop-opacity="0"/>
+    </radialGradient>
+    <clipPath id="solidHalf"><rect x="0" y="0" width="256" height="512"/></clipPath>
+    <clipPath id="ghostHalf"><rect x="256" y="0" width="256" height="512"/></clipPath>
+  </defs>
+  <rect width="512" height="512" fill="url(#bg)"/>
+  <rect width="512" height="512" fill="url(#grid)"/>
+  <rect width="512" height="512" fill="url(#glow)"/>
+  <!-- left: the hologram at 100% -->
+  <g clip-path="url(#solidHalf)" stroke="#B5F5FF" stroke-linejoin="round">
+    <rect x="112" y="120" width="48" height="142" fill="url(#scan)" stroke-width="6"/>
+    <rect x="104" y="112" width="64" height="16" fill="#7BEAFF" stroke-width="4"/>
+    <path d="M84 384 V254 L199 198 V254 L313 198 V254 L428 198 V384 Z" fill="url(#scan)" stroke-width="7"/>
+    <g fill="#06121A" stroke-width="5">
+      <rect x="112" y="292" width="44" height="44"/>
+      <rect x="184" y="292" width="44" height="44"/>
+    </g>
+  </g>
+  <!-- right: the same hologram turned down (faint scan lines, dashed outline) -->
+  <g clip-path="url(#ghostHalf)">
+    <path d="M84 384 V254 L199 198 V254 L313 198 V254 L428 198 V384 Z" fill="url(#scan)" fill-opacity="0.22"/>
+    <path d="M84 384 V254 L199 198 V254 L313 198 V254 L428 198 V384 Z" fill="none" stroke="#B5F5FF" stroke-width="7" stroke-linejoin="round" stroke-dasharray="18 12"/>
+    <g fill="#06121A" fill-opacity="0.35" stroke="#B5F5FF" stroke-width="5" stroke-dasharray="10 8">
+      <rect x="284" y="292" width="44" height="44"/>
+      <rect x="356" y="292" width="44" height="44"/>
+    </g>
+  </g>
+  <!-- FICSIT-orange ground -->
+  <rect x="80" y="384" width="352" height="22" rx="4" fill="#C46F25"/>
+  <rect x="80" y="384" width="352" height="14" rx="4" fill="#F08F3D"/>
+  <!-- before/after slider -->
+  <path d="M256 92 V406" stroke="#FFFFFF" stroke-width="7"/>
+  <circle cx="256" cy="142" r="36" fill="#FFFFFF" stroke="#071118" stroke-width="6"/>
+  <path d="M229 142 L246 129 V155 Z M283 142 L266 129 V155 Z" fill="#071118"/>
+</svg>
