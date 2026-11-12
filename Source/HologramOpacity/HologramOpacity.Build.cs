@@ -40,6 +40,9 @@ public class HologramOpacity : ModuleRules
 
 		PublicDependencyModuleNames.AddRange(new string[] {"FactoryGame", "SML"});
 
+		// Abstract (shared, instanced) building meshes, for dismantle highlights
+		PrivateDependencyModuleNames.AddRange(new string[] {"AbstractInstance"});
+
 		// Editor-only asset authoring helpers (HologramOpacityEditorLibrary)
 		if (Target.bBuildEditor) {
 			PrivateDependencyModuleNames.AddRange(new string[] {"GameFeatures"});

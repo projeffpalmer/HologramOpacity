@@ -24,6 +24,7 @@ Two settings in the game's own **Options > User Interface > Holograms/Build Mode
 
 - **Hologram Opacity** (0–100%). Turn it down to see through the hologram you are placing: the belt behind it, the foundation edge under it, the cliff you were definitely not about to build into. At 100% with scanlines on, holograms look exactly like vanilla.
 - **Show Scanlines** (checked by default). Uncheck it for clean holograms without scan lines, at any opacity, 100% included. FICSIT's Visual Compliance team calls the scanlines "motivating". Pioneers report still seeing them with their eyes closed.
+- **Dismantle mode too.** The building you are about to recycle fades the same way, in your dismantle colour, and keeps its outline so you can still see what you selected. FICSIT reminds you that dismantling is not a refund of your time.
 
 Also worth knowing:
 
@@ -44,6 +45,10 @@ Also worth knowing:
 
 *Show Scanlines off, at 100% and 50%.*
 
+![A Constructor in dismantle mode at 100%, 50% and 0% opacity](https://raw.githubusercontent.com/projeffpalmer/HologramOpacity/main/docs/screenshots/constructor-dismantle-100-50-0.png)
+
+*Dismantle mode at 100% (vanilla), 50% and 0%. The Constructor is still there. FICSIT checked twice.*
+
 ![The two new settings in the options menu](https://raw.githubusercontent.com/projeffpalmer/HologramOpacity/main/docs/screenshots/options-show-scanlines.png)
 
 *Where to find them: Options > User Interface > Holograms/Build Mode.*
@@ -62,9 +67,7 @@ No milestone, no M.A.M. research, no AWESOME Shop purchase. FICSIT considered ch
 
 FICSIT has not tested the following and considers that your job:
 
-- Blueprint holograms
-- Zooped foundations and walls
-- Power poles and wires
+- Mass dismantle and blueprint dismantle with many buildings selected at once
 - Joining someone else's game as a multiplayer client
 
 If something there looks wrong, report it. Your sacrifice will be noted in a file nobody reads.

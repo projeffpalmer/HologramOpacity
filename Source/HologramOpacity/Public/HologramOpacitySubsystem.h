@@ -1,16 +1,48 @@
 #pragma once
 
 #include "CoreMinimal.h"
+#include "InstanceData.h"
 #include "Subsystems/GameInstanceSubsystem.h"
 #include "Tickable.h"
 #include "HologramOpacitySubsystem.generated.h"
 
+class AActor;
+class APlayerController;
 class APostProcessVolume;
 class ASceneCapture2D;
+class UFGColoredInstanceMeshProxy;
+class UInstancedStaticMeshComponent;
 class UMaterialInstanceDynamic;
 class UMeshComponent;
+class UPrimitiveComponent;
 class UTextureRenderTarget2D;
 class UWorld;
+
+/** What the game's dismantle highlight (outline colour OC_DISMANTLE) covers this frame */
+struct FHologramOpacityDismantleScan
+{
+	/** Highlighted actors */
+	TArray<AActor*> Actors;
+	/** Their own visible meshes, which the highlight marks with custom depth stencil 8 */
+	TArray<UPrimitiveComponent*> Meshes;
+	/** The highlight's custom-depth-only copies of their instanced meshes (owned by the player) */
+	TArray<UPrimitiveComponent*> Proxies;
+
+	bool IsEmpty() const { return Actors.Num() == 0 && Meshes.Num() == 0 && Proxies.Num() == 0; }
+};
+
+/** One shared (instanced) mesh of a highlighted building, hidden in the world while the capture draws a copy */
+struct FHologramOpacityHiddenInstance
+{
+	/** An abstract instance (lightweight buildables, building parts), hidden with the game's own call */
+	TSharedPtr<FInstanceOwnershipHandle, ESPMode::NotThreadSafe> Handle;
+	/** Or a factory mesh instanced by its coloured instance manager, hidden by shrinking it in place */
+	TWeakObjectPtr<UFGColoredInstanceMeshProxy> ColoredMesh;
+	/** The instanced mesh component that draws it */
+	TWeakObjectPtr<UInstancedStaticMeshComponent> Source;
+	/** The coloured instance's own transform, in Source's space */
+	FTransform OriginalTransform = FTransform::Identity;
+};
 
 /**
  * Applies the "Hologram Opacity" and "Show Scanlines" user settings (Options > User Interface > Holograms/Build Mode)
@@ -27,6 +59,13 @@ class UWorld;
  * options, with or without scan lines, and blends it over the scene at the slider's opacity, behind the world and the
  * build gun's helper markers where they are in front. Materials are never changed. At 100% with scan lines on the
  * meshes get their original flag back and the game draws the hologram itself.
+ *
+ * Dismantle mode highlights a real building the same way (custom depth stencil 8 on its own meshes, plus custom-depth-
+ * only proxies of its instanced meshes, in the dismantle colour, with a contour). Below 100%, or without scan lines,
+ * the building's own meshes and the proxies leave the player's view (its hidden component list, so their shadows
+ * stay), its shared instances are hidden in place, and the capture draws the meshes and transient copies of those
+ * instances (same mesh, materials, transform and per-instance paint data). Everything is restored when the
+ * highlight ends or at 100% with scan lines on.
  *
  * (A capture rendered inside the main renderer would be cheaper, but in this game it trips an engine assertion in the
  * Nanite base pass, so the capture runs as its own scene renderer.)
@@ -84,13 +123,28 @@ private:
 
 	/** Loads the material and render target, and spawns the capture and post process volume in this world */
 	bool EnsureComposite(UWorld* World);
-	/** Hides the current hologram bodies from the main view, feeds them to the capture, and picks the state colour */
-	void UpdateComposite(UWorld* World, const TArray<UMeshComponent*>& Bodies, int32 HologramState);
+	/** Hides the current hologram bodies and dismantle highlights from the main view, feeds them to the capture, and
+	 *  picks the state colour */
+	void UpdateComposite(UWorld* World, const TArray<UMeshComponent*>& Bodies, int32 HologramState, const FHologramOpacityDismantleScan& Dismantle);
 	/** Gives every hidden mesh its own flag back and switches the composite off */
 	void StopComposite();
 	void SetCompositeEnabled(bool bEnabled);
 	void RefreshCompositeParameters();
 	void ReadColors();
+
+	/** Finds the dismantle highlight's actors, meshes and proxies */
+	static void ScanDismantle(UWorld* World, FHologramOpacityDismantleScan& Out);
+	/** Takes the highlighted buildings out of the main view; returns what the capture draws instead */
+	void UpdateDismantle(UWorld* World, const FHologramOpacityDismantleScan& Dismantle, TArray<UPrimitiveComponent*>& OutDrawn);
+	static TArray<FHologramOpacityHiddenInstance> HideInstances(AActor* Actor);
+	static void ShowInstances(const TArray<FHologramOpacityHiddenInstance>& Instances);
+	/** Recreates the capture's copies of every hidden instance, one instanced component per source component */
+	void RebuildInstanceCopies();
+	/** Sets the components this mod hides through the player controller's hidden component list */
+	void SetMainViewHidden(UWorld* World, const TArray<UPrimitiveComponent*>& Components);
+	/** Restores everything changed for dismantle highlights */
+	void StopDismantle();
+	bool HasDismantleState() const;
 
 	UPROPERTY(Transient)
 	TObjectPtr<UMaterialInstanceDynamic> CompositeMaterial = nullptr;
@@ -108,14 +162,26 @@ private:
 	/** Scalar values set with HoloOpacity.Param, kept when the material instance is recreated */
 	TMap<FName, float> ParameterOverrides;
 
+	/** Dismantle-highlighted actors and the shared instances hidden for each */
+	TMap<TWeakObjectPtr<AActor>, TArray<FHologramOpacityHiddenInstance>> DismantleActors;
+	/** Highlighted buildings' own meshes drawn by the capture, with their original "cast hidden shadow" flag */
+	TMap<TWeakObjectPtr<UPrimitiveComponent>, bool> ShadowFlags;
+	/** The capture's copy of the hidden instances of each source instanced component */
+	TMap<TWeakObjectPtr<UInstancedStaticMeshComponent>, TWeakObjectPtr<UInstancedStaticMeshComponent>> InstanceCopies;
+	UPROPERTY(Transient)
+	TArray<TObjectPtr<UInstancedStaticMeshComponent>> CopyComponents;
+	/** Components this mod added to the player controller's hidden component list */
+	TArray<TWeakObjectPtr<UPrimitiveComponent>> MainViewHidden;
+	TWeakObjectPtr<APlayerController> MainViewController;
+
 	float CurrentOpacity = 1.f;
 	float DebugOpacityOverride = -1.f;
 	bool bShowScanlines = true;
 	/** -1 = use the Options value, 0 = off, 1 = on */
 	int32 DebugScanlinesOverride = -1;
-	/** Hologram state the composite colours with: 0 valid, 1 soft clearance, 2 invalid */
+	/** State the composite colours with: 0 valid, 1 soft clearance, 2 invalid hologram, 3 dismantle */
 	int32 StateIndex = 0;
-	FLinearColor Colors[3];
+	FLinearColor Colors[4];
 	bool bCompositeEnabled = false;
 	bool bCompositeFailed = false;
 	bool bInitialized = false;

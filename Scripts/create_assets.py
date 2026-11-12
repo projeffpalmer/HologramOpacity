@@ -154,7 +154,8 @@ def mask(mat, x, y, src, src_output="", r=True, g=False, b=False, a=False):
 def create_composite_material(capture_target):
     """Post process: draws the captured hologram bodies (lit, with their own materials, so textures, paint, decals,
     materials and animated parts stay) in the hologram colour, with or without scan lines, and blends them over the
-    scene at the slider's opacity. Hidden where the world or a build gun helper marker (custom depth) is in front."""
+    scene at the slider's opacity. Hidden where the world or a build gun helper marker (custom depth) is in front.
+    Dismantle highlights also get the game's contour (EdgeIntensity > 0)."""
     path = "/{}/Materials".format(MOD)
     full = "{}/{}".format(path, COMPOSITE_MATERIAL)
     # Built from scratch on every run: rebuilding the graph in place left the old nodes in the asset
@@ -179,9 +180,11 @@ def create_composite_material(capture_target):
     opacity = expr(mat, scalar, -3000, -700, parameter_name="Opacity", default_value=1.0)
     show_lines = expr(mat, scalar, -3000, -620, parameter_name="ShowScanlines", default_value=1.0)
     emissive_strength = expr(mat, scalar, -3000, -540, parameter_name="EmissiveStrength", default_value=1.6)
-    base_intensity = expr(mat, scalar, -3000, -460, parameter_name="BaseIntensity", default_value=0.85)
-    line_intensity = expr(mat, scalar, -3000, -380, parameter_name="LineIntensity", default_value=0.18)
-    line_period = expr(mat, scalar, -3000, -300, parameter_name="LinePeriod", default_value=12.5)
+    # Lines as strong as the game's (about 20 of 255 brighter than the gaps, measured on a dismantle highlight)
+    base_intensity = expr(mat, scalar, -3000, -460, parameter_name="BaseIntensity", default_value=0.6)
+    line_intensity = expr(mat, scalar, -3000, -380, parameter_name="LineIntensity", default_value=0.75)
+    # Lines over the view's height: the game's lines are 11.55 px apart at 1440 px at every resolution scale
+    line_count = expr(mat, scalar, -3000, -300, parameter_name="LineCount", default_value=124.7)
     line_duty = expr(mat, scalar, -3000, -220, parameter_name="LineDuty", default_value=0.5)
     line_opacity_boost = expr(mat, scalar, -3000, -140, parameter_name="LineOpacityBoost", default_value=0.1)
     detail_gain = expr(mat, scalar, -3000, -60, parameter_name="DetailGain", default_value=1.0)
@@ -192,6 +195,9 @@ def create_composite_material(capture_target):
     depth_bias_scale = expr(mat, scalar, -3000, 340, parameter_name="DepthBiasScale", default_value=0.002)
     # Empty capture pixels hold the far depth, which the 16-bit target caps at 65504 cm: farther counts as no hologram
     max_depth = expr(mat, scalar, -3000, 420, parameter_name="MaxHoloDepth", default_value=60000.0)
+    # Contour like the game's dismantle highlight (0 = none, as on build holograms): brightness and width in pixels
+    edge_intensity = expr(mat, scalar, -3000, 500, parameter_name="EdgeIntensity", default_value=0.0)
+    edge_width = expr(mat, scalar, -3000, 580, parameter_name="EdgeWidth", default_value=2.0)
 
     # The scene and its depth (the world, without the hidden hologram), and the helper markers' custom depth
     scene = expr(mat, unreal.MaterialExpressionSceneTexture, -2600, -900, scene_texture_id=scene_id.PPI_POST_PROCESS_INPUT0)
@@ -230,9 +236,9 @@ def create_composite_material(capture_target):
     link(headroom, present, "")
     visible = math(mat, unreal.MaterialExpressionMultiply, -1250, -680, in_front, present)
 
-    # Screen-space scan lines like the game's: lines = frac(y / period) > duty
-    pixel_y = mask(mat, -2450, -300, screen, "PixelPosition", r=False, g=True)
-    y_scaled = math(mat, unreal.MaterialExpressionDivide, -2300, -300, pixel_y, line_period)
+    # Screen-space scan lines like the game's: lines = frac(v * count) > duty
+    viewport_v = mask(mat, -2450, -300, screen, "ViewportUV", r=False, g=True)
+    y_scaled = math(mat, unreal.MaterialExpressionMultiply, -2300, -300, viewport_v, line_count)
     y_frac = expr(mat, unreal.MaterialExpressionFrac, -2150, -300)
     link(y_scaled, y_frac, "")
     above = math(mat, unreal.MaterialExpressionSubtract, -2000, -300, y_frac, line_duty)
@@ -290,7 +296,46 @@ def create_composite_material(capture_target):
     link(scene_rgb, result, "A")
     link(holo, result, "B")
     link(coverage, result, "Alpha")
-    if not mel.connect_material_property(result, "", unreal.MaterialProperty.MP_EMISSIVE_COLOR):
+
+    # Contour: visible hologram pixels with an empty capture pixel EdgeWidth pixels away, at full strength like the
+    # build gun's helper markers. Neighbours are whole texels away, so their depth is never filtered
+    texel = math(mat, unreal.MaterialExpressionDivide, -2300, 520, edge_width, capture_size)
+    texel_u = mask(mat, -2150, 480, texel, r=True)
+    texel_v = mask(mat, -2150, 560, texel, r=False, g=True)
+    zero = expr(mat, unreal.MaterialExpressionConstant, -2150, 640, r=0.0)
+    step_u = math(mat, unreal.MaterialExpressionAppendVector, -2000, 480, texel_u, zero)
+    step_v = math(mat, unreal.MaterialExpressionAppendVector, -2000, 600, zero, texel_v)
+    neighbours = []
+    for index, (cls, step) in enumerate([(unreal.MaterialExpressionAdd, step_u), (unreal.MaterialExpressionSubtract, step_u),
+                                         (unreal.MaterialExpressionAdd, step_v), (unreal.MaterialExpressionSubtract, step_v)]):
+        y = 460 + index * 120
+        uv = math(mat, cls, -1850, y, capture_uv, step)
+        sample = expr(mat, unreal.MaterialExpressionTextureSample, -1700, y, sampler_type=linear_sampler)
+        link(capture_object, sample, "Tex")
+        link(uv, sample, "UVs")
+        depth = expr(mat, unreal.MaterialExpressionMin, -1550, y, const_b=1.0e9)
+        link(sample, depth, "A", "A")
+        room = math(mat, unreal.MaterialExpressionSubtract, -1400, y, max_depth, depth)
+        neighbour = expr(mat, unreal.MaterialExpressionSaturate, -1250, y)
+        link(room, neighbour, "")
+        neighbours.append(neighbour)
+    all_u = math(mat, unreal.MaterialExpressionMin, -1100, 520, neighbours[0], neighbours[1])
+    all_v = math(mat, unreal.MaterialExpressionMin, -1100, 760, neighbours[2], neighbours[3])
+    all_present = math(mat, unreal.MaterialExpressionMin, -950, 640, all_u, all_v)
+    border = expr(mat, unreal.MaterialExpressionOneMinus, -800, 640)
+    link(all_present, border, "")
+    edge = math(mat, unreal.MaterialExpressionMultiply, -650, 600, border, visible)
+    edge_on = expr(mat, unreal.MaterialExpressionMultiply, -800, 760, const_b=1000.0)
+    link(edge_intensity, edge_on, "A")
+    edge_on_clamped = expr(mat, unreal.MaterialExpressionSaturate, -650, 760)
+    link(edge_on, edge_on_clamped, "")
+    edge_alpha = math(mat, unreal.MaterialExpressionMultiply, -500, 680, edge, edge_on_clamped)
+    edge_color = math(mat, unreal.MaterialExpressionMultiply, -500, 440, holo_color, edge_intensity)
+    final = expr(mat, unreal.MaterialExpressionLinearInterpolate, -50, -300)
+    link(result, final, "A")
+    link(edge_color, final, "B")
+    link(edge_alpha, final, "Alpha")
+    if not mel.connect_material_property(final, "", unreal.MaterialProperty.MP_EMISSIVE_COLOR):
         fail("emissive connection failed")
     mel.recompile_material(mat)
     save(mat)

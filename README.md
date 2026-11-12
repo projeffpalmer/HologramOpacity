@@ -3,8 +3,8 @@
 <img src="docs/logo/hologram-opacity-logo.png" alt="Hologram Opacity logo" width="128" align="right">
 
 Adds a working **Hologram Opacity** slider and a **Show Scanlines** checkbox to
-**Options > User Interface > Holograms/Build Mode**, so build mode holograms can be made see-through (and line-free)
-while you place buildings.
+**Options > User Interface > Holograms/Build Mode**, so build mode holograms, and the buildings highlighted in
+dismantle mode, can be made see-through (and line-free).
 
 ![A Constructor hologram at 100% (vanilla), 99%, 75%, 50%, 25% and 0% opacity](docs/screenshots/constructor-opacity-100-99-75-50-25-0.png)
 
@@ -16,6 +16,12 @@ while you place buildings.
   paint, decals, materials and moving parts.
 - It uses your **Hologram Color**, **Soft Clearance Hologram Color** and **Hard Clearance (invalid) Hologram Color**
   from the same menu section, keeps scan lines like the vanilla look, and updates instantly.
+- **Dismantle mode** works the same way: the building you aim at (and every building selected for mass dismantle)
+  fades with the slider and follows Show Scanlines, in your **Dismantle Hologram Color**, with its textures, paint
+  and moving parts. Its contour stays at full strength, so you can still see what is selected at 0%.
+
+![A Constructor in dismantle mode at 100% (vanilla), 50% and 0% opacity](docs/screenshots/constructor-dismantle-100-50-0.png)
+
 - The values are saved with your other options (`GameUserSettings.ini`: `HologramOpacity.Opacity` in
   `mFloatValues`, `HologramOpacity.Scanlines` as 0/1 in `mIntValues`).
 - Client-side only (`RequiredOnRemote: false`): other players and servers don't need it.
@@ -59,6 +65,20 @@ changes a material:
   opacity. Where the world or a build gun helper marker (custom depth) is in front, the hologram stays behind it.
 - At 100% with scan lines on, every hidden mesh gets its own flag back and the capture and volume switch off, so the
   game draws the hologram itself.
+- Dismantle mode highlights a real building: the game's outline component (`UFGOutlineComponent`, outline colour
+  `OC_DISMANTLE`) gives the building's own meshes custom depth stencil 8 and adds custom-depth-only copies
+  ("proxies") of its instanced meshes, and the same post process tints them in the dismantle colour with a contour.
+  Below 100%, or with scan lines off, the mod reads the outline's actor list and:
+  - takes the building's own meshes, the outline proxies and the black fog planes in its openings (pooled meshes of
+    the game's `APoolRoot`, found at the building's fog plane positions) out of the player's view through the player
+    controller's hidden component list, so the building keeps casting its shadow;
+  - hides the building's shared instances in place (abstract instances with the game's own `HideInstance`, coloured
+    instances such as production indicators by shrinking them) and gives the capture transient copies with the same
+    mesh, materials, transform and per-instance data (paint, conveyor belt curves);
+  - draws all of it in the dismantle colour, with the game's contour (`EdgeIntensity`).
+
+  When the highlight ends, or at 100% with scan lines on, every change is undone. When a build hologram and a
+  dismantle highlight are on screen together, both use the hologram's colour.
 - A capture rendered inside the main renderer would be cheaper, but in this game it trips an engine assertion in the
   Nanite base pass, so the capture runs as its own scene renderer while holograms are see-through.
 
@@ -67,8 +87,8 @@ changes a material:
 |---|---|
 | `HoloOpacity.Set <0..1 or -1>` | Override the opacity for testing; `-1` returns to the Options value |
 | `HoloOpacity.Scanlines <1, 0 or -1>` | Override Show Scanlines for testing; `-1` returns to the Options value |
-| `HoloOpacity.Param <Param> <value>` | Tune the composite material until the game restarts: EmissiveStrength, BaseIntensity, LineIntensity, LinePeriod, LineDuty, LineOpacityBoost, DetailGain, DetailFloor, DetailScale, ColorSaturation, DepthBias, DepthBiasScale, MaxHoloDepth |
-| `HoloOpacity.Dump` | Log the settings, the capture, volume and render target, and every hologram mesh (body, hidden) to `FactoryGame.log` |
+| `HoloOpacity.Param <Param> <value>` | Tune the composite material until the game restarts: EmissiveStrength, BaseIntensity, LineIntensity, LineCount, LineDuty, LineOpacityBoost, DetailGain, DetailFloor, DetailScale, ColorSaturation, DepthBias, DepthBiasScale, MaxHoloDepth, EdgeIntensity, EdgeWidth |
+| `HoloOpacity.Dump` | Log the settings, the capture, volume and render target, every hologram mesh (body, hidden) and every dismantle highlight (proxies, own meshes, shared instances, fog planes, what the mod hides and copies) to `FactoryGame.log` |
 
 ## Building
 Starter project `SatisfactoryModLoader` (game headers CL517554), Unreal Engine 5.6.1-CSS, Visual Studio 2022 17.14,
