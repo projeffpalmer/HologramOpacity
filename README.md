@@ -3,18 +3,25 @@
 <img src="docs/logo/hologram-opacity-logo.png" alt="Hologram Opacity logo" width="128" align="right">
 
 Adds a working **Hologram Opacity** slider and a **Show Scanlines** checkbox to
-**Options > User Interface > Holograms/Build Mode**, so build mode holograms can be made see-through (and line-free)
-while you place buildings.
+**Options > User Interface > Holograms/Build Mode**, so build mode holograms, and the buildings highlighted in
+dismantle mode, can be made see-through (and line-free).
 
-![A foundation hologram at 100% (vanilla), 75%, 50%, 25% and 0% opacity](docs/screenshots/hologram-opacity-100-75-50-25-0.png)
+![A Constructor hologram at 100% (vanilla), 99%, 75%, 50%, 25% and 0% opacity](docs/screenshots/constructor-opacity-100-99-75-50-25-0.png)
 
 - **100%** with **Show Scanlines** checked (the defaults) is the normal, vanilla hologram. The mod changes nothing then.
 - **Show Scanlines** (right under the slider): unchecked removes the horizontal scan lines from build mode holograms
   at every opacity, including 100% (a clean, solid hologram in the same colour).
 - Lower values fade the hologram toward fully see-through (**0%**), so you can see the ground, water, foundations
-  and machines behind and under it.
+  and machines behind and under it. The hologram keeps everything the vanilla one shows: the building's textures,
+  paint, decals, materials and moving parts.
 - It uses your **Hologram Color**, **Soft Clearance Hologram Color** and **Hard Clearance (invalid) Hologram Color**
   from the same menu section, keeps scan lines like the vanilla look, and updates instantly.
+- **Dismantle mode** works the same way: the building you aim at (and every building selected for mass dismantle)
+  fades with the slider and follows Show Scanlines, in your **Dismantle Hologram Color**, with its textures, paint
+  and moving parts. Its contour stays at full strength, so you can still see what is selected at 0%.
+
+![A Constructor in dismantle mode at 100% (vanilla), 50% and 0% opacity](docs/screenshots/constructor-dismantle-100-50-0.png)
+
 - The values are saved with your other options (`GameUserSettings.ini`: `HologramOpacity.Opacity` in
   `mFloatValues`, `HologramOpacity.Scanlines` as 0/1 in `mIntValues`).
 - Client-side only (`RequiredOnRemote: false`): other players and servers don't need it.
@@ -37,34 +44,51 @@ Note for Windows 11 with **Smart App Control** on: a self-built mod DLL has no M
 which makes the game refuse to load the mod. Mods published on ficsit.app are widely downloaded and pass.
 
 ## How it works
-In Satisfactory 1.2 a hologram renders the building's own materials and writes a custom depth stencil value
-(5 valid, 3 soft clearance, 6 invalid). The global post process `PPI_OutlineHologram` then replaces those pixels
-with the hologram colour and scan lines. That replacement is opaque, so below 100% the mod draws the hologram body
-itself:
+In Satisfactory 1.2 a hologram renders the building's own materials (textures, paint, decals, moving parts) and
+writes a custom depth stencil value (5 valid, 3 soft clearance, 6 invalid). The global post process
+`PPI_OutlineHologram` then recolours those pixels with the hologram colour and scan lines. That result is opaque, so
+below 100%, and with scan lines off, the mod takes the hologram out of the main view and draws it itself. It never
+changes a material:
 - `/HologramOpacity/Settings/US_HologramOpacity` is a native `FGUserSetting` (slider 0..1, shown as 0..100, applied
   instantly) registered through the mod's `FGGameFeatureData` scan rule, so it lives in the game's own menu.
-- `UHologramOpacitySubsystem` (game instance subsystem) reads the setting every frame. For every live `AFGHologram`
-  it swaps the building materials on the body meshes (custom depth on, stencil 3/5/6, no build gun helper material)
-  for a dynamic instance of `/HologramOpacity/Materials/M_HologramOpacity` (translucent, unlit, scan lines, fresnel),
-  and turns custom depth off on those meshes so the post process leaves them alone. Guidelines, clearance boxes and
-  connection arrows are untouched.
-- At 100% every changed mesh is restored exactly (materials, custom depth, main pass).
-- `/HologramOpacity/Settings/US_HologramScanlines` is a checkbox (`HologramOpacity.Scanlines`, default on, priority
-  just under the slider). Off sets the body material's `LineIntensity`/`LineOpacityBoost` to 0 and raises
-  `BaseIntensity` by the lines' average so the colour doesn't change. The vanilla lines at 100% come from the post
-  process, so with lines off the mod draws hologram bodies at 100% too (fully opaque, no lines). Dismantle
-  highlights are not affected.
+  `/HologramOpacity/Settings/US_HologramScanlines` is the "Show Scanlines" checkbox right under it.
+- `UHologramOpacitySubsystem` (game instance subsystem) reads both settings every frame. It finds the hologram body
+  meshes of every live `AFGHologram` (custom depth on, stencil 3/5/6, no build gun helper material) and makes them
+  visible to scene captures only, so the main view and the game's post process stop drawing them. Guidelines,
+  clearance boxes and connection arrows are untouched.
+- A transient `SceneCapture2D` with the main view's camera, resolution and jitter (`bMainViewCamera`) draws just those
+  meshes, lit and with their own materials, into `/HologramOpacity/Materials/RT_HologramOpacityCapture` (colour in
+  RGB, depth in A). Lumen, ambient occlusion, screen-space reflections, fog and motion blur are off for it.
+- The post process material `/HologramOpacity/Materials/M_HologramOpacityComposite`, on a transient unbound post
+  process volume, draws the captured hologram in the colour from the Holograms options (the most severe state among
+  the holograms on screen), with or without screen-space scan lines, and blends it over the scene at the slider's
+  opacity. Where the world or a build gun helper marker (custom depth) is in front, the hologram stays behind it.
+- At 100% with scan lines on, every hidden mesh gets its own flag back and the capture and volume switch off, so the
+  game draws the hologram itself.
+- Dismantle mode highlights a real building: the game's outline component (`UFGOutlineComponent`, outline colour
+  `OC_DISMANTLE`) gives the building's own meshes custom depth stencil 8 and adds custom-depth-only copies
+  ("proxies") of its instanced meshes, and the same post process tints them in the dismantle colour with a contour.
+  Below 100%, or with scan lines off, the mod reads the outline's actor list and:
+  - takes the building's own meshes, the outline proxies and the black fog planes in its openings (pooled meshes of
+    the game's `APoolRoot`, found at the building's fog plane positions) out of the player's view through the player
+    controller's hidden component list, so the building keeps casting its shadow;
+  - hides the building's shared instances in place (abstract instances with the game's own `HideInstance`, coloured
+    instances such as production indicators by shrinking them) and gives the capture transient copies with the same
+    mesh, materials, transform and per-instance data (paint, conveyor belt curves);
+  - draws all of it in the dismantle colour, with the game's contour (`EdgeIntensity`).
+
+  When the highlight ends, or at 100% with scan lines on, every change is undone. When a build hologram and a
+  dismantle highlight are on screen together, both use the hologram's colour.
+- A capture rendered inside the main renderer would be cheaper, but in this game it trips an engine assertion in the
+  Nanite base pass, so the capture runs as its own scene renderer while holograms are see-through.
 
 ### Debug console commands (in-game console, the key left of 1)
 | Command | What it does |
 |---|---|
 | `HoloOpacity.Set <0..1 or -1>` | Override the opacity for testing; `-1` returns to the Options value |
 | `HoloOpacity.Scanlines <1, 0 or -1>` | Override Show Scanlines for testing; `-1` returns to the Options value |
-| `HoloOpacity.Mode <0..3>` | 0 vanilla meshes, 1 translucent under the post process, 2 translucent (default), 3 ghost |
-| `HoloOpacity.Param custom <Param> <value>` | Tune the body material: EmissiveStrength, BaseIntensity, LineIntensity, LinePeriod, LineDuty, ScanSpeed, LineOpacityBoost, MinOpacity, FresnelExponent, FresnelBoost |
-| `HoloOpacity.Rule pp <Param> <valueAt0%>` | Make a parameter of the hologram post process follow the slider |
-| `HoloOpacity.Stencil <ok> <warn> <error>` | Force stencil values on hologram bodies (-1 keeps the game's) |
-| `HoloOpacity.Dump` | Log the setting, materials, live holograms and post process blendables to `FactoryGame.log` |
+| `HoloOpacity.Param <Param> <value>` | Tune the composite material until the game restarts: EmissiveStrength, BaseIntensity, LineIntensity, LineCount, LineDuty, LineOpacityBoost, DetailGain, DetailFloor, DetailScale, ColorSaturation, DepthBias, DepthBiasScale, MaxHoloDepth, EdgeIntensity, EdgeWidth |
+| `HoloOpacity.Dump` | Log the settings, the capture, volume and render target, every hologram mesh (body, hidden) and every dismantle highlight (proxies, own meshes, shared instances, fog planes, what the mod hides and copies) to `FactoryGame.log` |
 
 ## Building
 Starter project `SatisfactoryModLoader` (game headers CL517554), Unreal Engine 5.6.1-CSS, Visual Studio 2022 17.14,
@@ -73,7 +97,9 @@ Wwise 2025.1.6 (see https://docs.ficsit.app).
 2. Create or update the content:
    `UnrealEditor-Cmd.exe FactoryGame.uproject -run=pythonscript -script="Mods/GameFeatures/HologramOpacity/Scripts/create_assets.py" -unattended`
 3. Package with Alpakit, or:
-   `RunUAT.bat PackagePlugin -project=<FactoryGame.uproject> -DLCName=HologramOpacity -clientconfig=Shipping -platform=Win64 -build -installed -nocompileeditor -merge -CopyToGameDirectory_Windows=<Satisfactory>`
+   `RunUAT.bat -ScriptsForProject=<FactoryGame.uproject> PackagePlugin -project=<FactoryGame.uproject> -DLCName=HologramOpacity -clientconfig=Shipping -serverconfig=Shipping -platform=Win64 -build -installed -nocompileeditor -merge`
+   (`-ScriptsForProject` loads Alpakit's `PackagePlugin` command; add `-CopyToGameDirectory_Windows=<Satisfactory>`
+   to install it, with the game closed).
 
 ## Credits
 - Built with Coffee Stain's modding headers, the Satisfactory Mod Loader and Alpakit (SML team), wwise-cli (Mircea

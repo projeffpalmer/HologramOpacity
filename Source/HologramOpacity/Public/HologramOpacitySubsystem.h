@@ -1,77 +1,74 @@
 #pragma once
 
 #include "CoreMinimal.h"
+#include "InstanceData.h"
 #include "Subsystems/GameInstanceSubsystem.h"
 #include "Tickable.h"
 #include "HologramOpacitySubsystem.generated.h"
 
-class AFGHologram;
-class UMaterialInterface;
+class AActor;
+class APlayerController;
+class APostProcessVolume;
+class ASceneCapture2D;
+class UFGColoredInstanceMeshProxy;
+class UInstancedStaticMeshComponent;
 class UMaterialInstanceDynamic;
 class UMeshComponent;
+class UPrimitiveComponent;
+class UTextureRenderTarget2D;
 class UWorld;
 
-/** One scalar parameter that follows the opacity slider: lerp(ValueAtZero, ValueAtOne, Opacity). */
-USTRUCT()
-struct FHologramOpacityScalarRule
+/** What the game's dismantle highlight (outline colour OC_DISMANTLE) covers this frame */
+struct FHologramOpacityDismantleScan
 {
-	GENERATED_BODY()
+	/** Highlighted actors */
+	TArray<AActor*> Actors;
+	/** Their own visible meshes, which the highlight marks with custom depth stencil 8 */
+	TArray<UPrimitiveComponent*> Meshes;
+	/** The highlight's custom-depth-only copies of their instanced meshes (owned by the player) */
+	TArray<UPrimitiveComponent*> Proxies;
 
-	UPROPERTY()
-	FName Parameter;
-
-	/** Value used at 0% opacity. */
-	UPROPERTY()
-	float ValueAtZero = 0.f;
-
-	/** Value used at 100% opacity. Read from the source material when the rule is created. */
-	UPROPERTY()
-	float ValueAtOne = 1.f;
+	bool IsEmpty() const { return Actors.Num() == 0 && Meshes.Num() == 0 && Proxies.Num() == 0; }
 };
 
-/** A dynamic material instance owned by the mod. */
-USTRUCT()
-struct FHologramOpacityMaterial
+/** One shared (instanced) mesh of a highlighted building, hidden in the world while the capture draws a copy */
+struct FHologramOpacityHiddenInstance
 {
-	GENERATED_BODY()
-
-	/** Key used by the console commands: pp, custom_ok, custom_warn, custom_error */
-	UPROPERTY()
-	FString Key;
-
-	/** The vanilla material this replaces (the hologram post process for "pp"), or null */
-	UPROPERTY()
-	TObjectPtr<UMaterialInterface> Original = nullptr;
-
-	UPROPERTY()
-	TObjectPtr<UMaterialInstanceDynamic> Dynamic = nullptr;
-
-	UPROPERTY()
-	TArray<FHologramOpacityScalarRule> Rules;
-};
-
-/** What the mod changed on one hologram mesh component, so it can be put back exactly. */
-struct FHologramOpacitySavedMesh
-{
-	TArray<TWeakObjectPtr<UMaterialInterface>> Materials;
-	bool bRenderCustomDepth = false;
-	bool bRenderInMainPass = true;
-	int32 Stencil = 0;
+	/** An abstract instance (lightweight buildables, building parts), hidden with the game's own call */
+	TSharedPtr<FInstanceOwnershipHandle, ESPMode::NotThreadSafe> Handle;
+	/** Or a factory mesh instanced by its coloured instance manager, hidden by shrinking it in place */
+	TWeakObjectPtr<UFGColoredInstanceMeshProxy> ColoredMesh;
+	/** The instanced mesh component that draws it */
+	TWeakObjectPtr<UInstancedStaticMeshComponent> Source;
+	/** The coloured instance's own transform, in Source's space */
+	FTransform OriginalTransform = FTransform::Identity;
 };
 
 /**
- * Applies the "Hologram Opacity" user setting (Options > User Interface > Holograms/Build Mode) to build mode holograms.
+ * Applies the "Hologram Opacity" and "Show Scanlines" user settings (Options > User Interface > Holograms/Build Mode)
+ * to build mode holograms.
  *
- * In Satisfactory 1.2 a hologram renders the building's own (opaque) materials and writes a custom depth stencil
- * value (5 valid, 3 soft clearance, 6 invalid); the global post process PPI_OutlineHologram then replaces those
- * pixels with the hologram colour and scan lines. That replacement is opaque, so below 100% the mod draws the
- * hologram body itself: the building materials are swapped for a translucent hologram material from this mod (in
- * the colours from the Holograms options) and custom depth is turned off on those meshes so the post process
- * leaves them alone. At 100% everything is restored and the hologram is vanilla.
+ * In Satisfactory 1.2 a hologram renders the building's own materials (textures, paint, decals, animated parts) and
+ * writes a custom depth stencil value; the global post process PPI_OutlineHologram then recolours those pixels with
+ * the hologram colour and scan lines. That result is opaque.
  *
- * "Show Scanlines" (checkbox under the slider): when unchecked, the body material's scan lines are switched off,
- * and because the vanilla scan lines at 100% come from the post process, the mod then draws the hologram body at
- * 100% too (fully opaque, same colour, no lines).
+ * Below 100%, or with scan lines off, the mod keeps the hologram's own rendering but takes it out of the main view: the
+ * hologram body meshes are made visible to scene captures only, and a scene capture with the main view's camera,
+ * resolution and jitter draws just those meshes, lit, into a render target (colour in RGB, depth in A). The post
+ * process material M_HologramOpacityComposite draws the hologram from that target in the colour from the Holograms
+ * options, with or without scan lines, and blends it over the scene at the slider's opacity, behind the world and the
+ * build gun's helper markers where they are in front. Materials are never changed. At 100% with scan lines on the
+ * meshes get their original flag back and the game draws the hologram itself.
+ *
+ * Dismantle mode highlights a real building the same way (custom depth stencil 8 on its own meshes, plus custom-depth-
+ * only proxies of its instanced meshes, in the dismantle colour, with a contour). Below 100%, or without scan lines,
+ * the building's own meshes and the proxies leave the player's view (its hidden component list, so their shadows
+ * stay), its shared instances are hidden in place, and the capture draws the meshes and transient copies of those
+ * instances (same mesh, materials, transform and per-instance paint data). Everything is restored when the
+ * highlight ends or at 100% with scan lines on.
+ *
+ * (A capture rendered inside the main renderer would be cheaper, but in this game it trips an engine assertion in the
+ * Nanite base pass, so the capture runs as its own scene renderer.)
  */
 UCLASS()
 class HOLOGRAMOPACITY_API UHologramOpacitySubsystem : public UGameInstanceSubsystem, public FTickableGameObject
@@ -111,69 +108,83 @@ public:
 	// Debug / tuning, driven by the HoloOpacity.* console commands
 	void SetDebugOpacityOverride(float InOpacity);
 	void SetDebugScanlinesOverride(int32 InValue);
-	void SetMode(int32 InMode);
-	void SetStencilOverrides(int32 Ok, int32 Warn, int32 Error);
-	void SetScalarRule(const FString& Key, FName Parameter, float ValueAtZero);
-	void SetScalarDirect(const FString& Key, FName Parameter, float Value);
+	void SetCompositeParameter(FName Parameter, float Value);
 	void DumpState();
 
 private:
-	enum EMode : int32
-	{
-		/** Leave the hologram meshes alone (only post process rules apply) */
-		Mode_Vanilla = 0,
-		/** Translucent body, post process still drawn over it */
-		Mode_TranslucentWithPostProcess = 1,
-		/** Translucent body, post process skipped (true see-through), default */
-		Mode_Translucent = 2,
-		/** Body not drawn in the main pass, post process only (ghost) */
-		Mode_Ghost = 3,
-	};
-
 	float ReadOpacitySetting() const;
 	bool ReadScanlinesSetting() const;
-	bool EnsureMaterials();
-	FHologramOpacityMaterial* FindEntry(const FString& Key);
-	const FHologramOpacityMaterial* FindEntry(const FString& Key) const;
-	FHologramOpacityMaterial& AddEntry(const FString& Key, UMaterialInterface* Original, UMaterialInterface* Parent);
-	void AddRule(FHologramOpacityMaterial& Entry, FName Parameter, float ValueAtZero);
-	void RefreshDynamicParameters();
 	bool IsVanilla() const { return CurrentOpacity >= 0.999f; }
-	/** The mod draws hologram bodies below 100%, and at 100% too when scan lines are turned off */
-	bool WantsMeshChanges() const { return Mode != Mode_Vanilla && (!IsVanilla() || !bShowScanlines); }
+	/** The mod draws holograms itself below 100%, and at 100% too when scan lines are turned off */
+	bool WantsComposite() const { return !IsVanilla() || !bShowScanlines; }
 
-	/** True for the meshes that make up the building preview (not guidelines, clearance boxes or arrows). */
+	/** True for the meshes that make up the building preview (not guidelines, clearance boxes or arrows) */
 	static bool IsHologramBodyMesh(const UMeshComponent* Mesh);
-	UMaterialInterface* GetBodyMaterial(uint8 HologramMaterialState) const;
-	void ApplyToHologram(AFGHologram* Hologram);
-	void ApplyToHolograms(UWorld* World);
-	void RestoreAllMeshes();
-	void ApplyToPostProcess(UWorld* World);
+
+	/** Loads the material and render target, and spawns the capture and post process volume in this world */
+	bool EnsureComposite(UWorld* World);
+	/** Hides the current hologram bodies and dismantle highlights from the main view, feeds them to the capture, and
+	 *  picks the state colour */
+	void UpdateComposite(UWorld* World, const TArray<UMeshComponent*>& Bodies, int32 HologramState, const FHologramOpacityDismantleScan& Dismantle);
+	/** Gives every hidden mesh its own flag back and switches the composite off */
+	void StopComposite();
+	void SetCompositeEnabled(bool bEnabled);
+	void RefreshCompositeParameters();
+	void ReadColors();
+
+	/** Finds the dismantle highlight's actors, meshes and proxies */
+	static void ScanDismantle(UWorld* World, FHologramOpacityDismantleScan& Out);
+	/** Takes the highlighted buildings out of the main view; returns what the capture draws instead */
+	void UpdateDismantle(UWorld* World, const FHologramOpacityDismantleScan& Dismantle, TArray<UPrimitiveComponent*>& OutDrawn);
+	static TArray<FHologramOpacityHiddenInstance> HideInstances(AActor* Actor);
+	static void ShowInstances(const TArray<FHologramOpacityHiddenInstance>& Instances);
+	/** Recreates the capture's copies of every hidden instance, one instanced component per source component */
+	void RebuildInstanceCopies();
+	/** Sets the components this mod hides through the player controller's hidden component list */
+	void SetMainViewHidden(UWorld* World, const TArray<UPrimitiveComponent*>& Components);
+	/** Restores everything changed for dismantle highlights */
+	void StopDismantle();
+	bool HasDismantleState() const;
 
 	UPROPERTY(Transient)
-	TArray<FHologramOpacityMaterial> Materials;
+	TObjectPtr<UMaterialInstanceDynamic> CompositeMaterial = nullptr;
 
-	/** Hologram meshes the mod has changed, with what they looked like before */
-	TMap<TWeakObjectPtr<UMeshComponent>, FHologramOpacitySavedMesh> ModifiedMeshes;
+	UPROPERTY(Transient)
+	TObjectPtr<UTextureRenderTarget2D> CaptureTarget = nullptr;
+
+	/** Spawned (transient, never saved) in the current game world */
+	TWeakObjectPtr<ASceneCapture2D> Capture;
+	TWeakObjectPtr<APostProcessVolume> Volume;
+
+	/** Hologram meshes hidden from the main view, with their original "visible in scene capture only" flag */
+	TMap<TWeakObjectPtr<UMeshComponent>, bool> HiddenMeshes;
+
+	/** Scalar values set with HoloOpacity.Param, kept when the material instance is recreated */
+	TMap<FName, float> ParameterOverrides;
+
+	/** Dismantle-highlighted actors and the shared instances hidden for each */
+	TMap<TWeakObjectPtr<AActor>, TArray<FHologramOpacityHiddenInstance>> DismantleActors;
+	/** Highlighted buildings' own meshes drawn by the capture, with their original "cast hidden shadow" flag */
+	TMap<TWeakObjectPtr<UPrimitiveComponent>, bool> ShadowFlags;
+	/** The capture's copy of the hidden instances of each source instanced component */
+	TMap<TWeakObjectPtr<UInstancedStaticMeshComponent>, TWeakObjectPtr<UInstancedStaticMeshComponent>> InstanceCopies;
+	UPROPERTY(Transient)
+	TArray<TObjectPtr<UInstancedStaticMeshComponent>> CopyComponents;
+	/** Components this mod added to the player controller's hidden component list */
+	TArray<TWeakObjectPtr<UPrimitiveComponent>> MainViewHidden;
+	TWeakObjectPtr<APlayerController> MainViewController;
 
 	float CurrentOpacity = 1.f;
 	float DebugOpacityOverride = -1.f;
 	bool bShowScanlines = true;
 	/** -1 = use the Options value, 0 = off, 1 = on */
 	int32 DebugScanlinesOverride = -1;
-	/** Scan line defaults read from M_HologramOpacity (restored when lines are turned back on) */
-	float DefaultBaseIntensity = 0.85f;
-	float DefaultLineIntensity = 0.18f;
-	float DefaultLineOpacityBoost = 0.1f;
-	float DefaultLineDuty = 0.5f;
-	int32 Mode = Mode_Translucent;
-	/** Debug: custom depth stencil values to force on body meshes per state (ok, warning, error); -1 = leave */
-	int32 StencilOverride[3] = {-1, -1, -1};
-	FLinearColor LastColors[3];
-	bool bMaterialsReady = false;
-	bool bMaterialsFailed = false;
+	/** State the composite colours with: 0 valid, 1 soft clearance, 2 invalid hologram, 3 dismantle */
+	int32 StateIndex = 0;
+	FLinearColor Colors[4];
+	bool bCompositeEnabled = false;
+	bool bCompositeFailed = false;
 	bool bInitialized = false;
-	bool bForceRefresh = true;
-	bool bLastApplied = false;
-	double LastSlowCheck = -1000.0;
+	bool bParametersDirty = true;
+	double LastColorCheck = -1000.0;
 };
