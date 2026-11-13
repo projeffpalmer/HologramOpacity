@@ -11,6 +11,7 @@ class APlayerController;
 class APostProcessVolume;
 class ASceneCapture2D;
 class UFGColoredInstanceMeshProxy;
+class UFGUserSettingApplyType;
 class UInstancedStaticMeshComponent;
 class UMaterialInstanceDynamic;
 class UMeshComponent;
@@ -21,9 +22,10 @@ class UWorld;
 /** What the game's dismantle highlight (outline colour OC_DISMANTLE) covers this frame */
 struct FHologramOpacityDismantleScan
 {
-	/** Highlighted actors */
+	/** Highlighted actors (whole-actor highlights only: their shared instances and fog planes go with them) */
 	TArray<AActor*> Actors;
-	/** Their own visible meshes, which the highlight marks with custom depth stencil 8 */
+	/** Their own visible meshes, which the highlight marks with custom depth stencil 8 (for a highlight of one mesh of
+	 *  an actor, just that mesh) */
 	TArray<UPrimitiveComponent*> Meshes;
 	/** The highlight's custom-depth-only copies of their instanced meshes (owned by the player) */
 	TArray<UPrimitiveComponent*> Proxies;
@@ -34,9 +36,10 @@ struct FHologramOpacityDismantleScan
 /** One shared (instanced) mesh of a highlighted building, hidden in the world while the capture draws a copy */
 struct FHologramOpacityHiddenInstance
 {
-	/** An abstract instance (lightweight buildables, building parts), hidden with the game's own call */
-	TSharedPtr<FInstanceOwnershipHandle, ESPMode::NotThreadSafe> Handle;
-	/** Or a factory mesh instanced by its coloured instance manager, hidden by shrinking it in place */
+	/** An abstract instance (lightweight buildables, building parts) of an AFGBuildable, hidden with the game's own call */
+	FInstanceOwnerHandlePtr Handle;
+	/** Or a factory mesh instanced by its coloured instance manager, hidden by shrinking it in place to a scale only this
+	 *  mod uses, so it is only restored while it is still shrunk by this mod */
 	TWeakObjectPtr<UFGColoredInstanceMeshProxy> ColoredMesh;
 	/** The instanced mesh component that draws it */
 	TWeakObjectPtr<UInstancedStaticMeshComponent> Source;
@@ -112,6 +115,8 @@ public:
 	void DumpState();
 
 private:
+	/** Looks the two settings up by StrId (in Tick, once a second) */
+	void FindSettings();
 	float ReadOpacitySetting() const;
 	bool ReadScanlinesSetting() const;
 	bool IsVanilla() const { return CurrentOpacity >= 0.999f; }
@@ -138,8 +143,9 @@ private:
 	void UpdateDismantle(UWorld* World, const FHologramOpacityDismantleScan& Dismantle, TArray<UPrimitiveComponent*>& OutDrawn);
 	static TArray<FHologramOpacityHiddenInstance> HideInstances(AActor* Actor);
 	static void ShowInstances(const TArray<FHologramOpacityHiddenInstance>& Instances);
-	/** Recreates the capture's copies of every hidden instance, one instanced component per source component */
-	void RebuildInstanceCopies();
+	/** Updates the capture's copies of the hidden instances, one instanced component per source component. With Added,
+	 *  only appends the instances of those newly highlighted actors; otherwise recreates every copy's instances. */
+	void UpdateInstanceCopies(const TArray<AActor*>* Added);
 	/** Sets the components this mod hides through the player controller's hidden component list */
 	void SetMainViewHidden(UWorld* World, const TArray<UPrimitiveComponent*>& Components);
 	/** Restores everything changed for dismantle highlights */
@@ -166,13 +172,17 @@ private:
 	TMap<TWeakObjectPtr<AActor>, TArray<FHologramOpacityHiddenInstance>> DismantleActors;
 	/** Highlighted buildings' own meshes drawn by the capture, with their original "cast hidden shadow" flag */
 	TMap<TWeakObjectPtr<UPrimitiveComponent>, bool> ShadowFlags;
-	/** The capture's copy of the hidden instances of each source instanced component */
+	/** The capture's copy of the hidden instances of each source instanced component (owned by the capture actor) */
 	TMap<TWeakObjectPtr<UInstancedStaticMeshComponent>, TWeakObjectPtr<UInstancedStaticMeshComponent>> InstanceCopies;
-	UPROPERTY(Transient)
-	TArray<TObjectPtr<UInstancedStaticMeshComponent>> CopyComponents;
+	/** Set once a second while copies exist, so paint or other per-instance changes reach the copies */
+	bool bRefreshInstanceCopies = false;
 	/** Components this mod added to the player controller's hidden component list */
 	TArray<TWeakObjectPtr<UPrimitiveComponent>> MainViewHidden;
 	TWeakObjectPtr<APlayerController> MainViewController;
+
+	/** The two settings, found by StrId once a second; their values are read every frame */
+	TWeakObjectPtr<UFGUserSettingApplyType> OpacitySetting;
+	TWeakObjectPtr<UFGUserSettingApplyType> ScanlinesSetting;
 
 	float CurrentOpacity = 1.f;
 	float DebugOpacityOverride = -1.f;
@@ -186,5 +196,6 @@ private:
 	bool bCompositeFailed = false;
 	bool bInitialized = false;
 	bool bParametersDirty = true;
-	double LastColorCheck = -1000.0;
+	/** When Tick last looked the settings up and re-read the colours (FPlatformTime seconds) */
+	double LastSlowCheck = -1000.0;
 };

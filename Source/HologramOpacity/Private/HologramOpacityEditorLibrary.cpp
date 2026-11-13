@@ -86,6 +86,7 @@ bool UHologramOpacityEditorLibrary::SetupOpacitySetting(UFGUserSetting* Setting,
 	Slider->MaxDisplayValue = 100.f;
 	Slider->MaxFractionalDigits = 0;
 	Slider->ShowZeroAsOff = false;
+	// In display units (MinDisplayValue..MaxDisplayValue), unlike the stored 0..1 value
 	Slider->DefaultSliderValue = 100.f;
 
 	Setting->MarkPackageDirty();
@@ -127,13 +128,22 @@ bool UHologramOpacityEditorLibrary::AddPrimaryAssetTypeToScan(UGameFeatureData* 
 		return false;
 	}
 
+	// One rule per asset type: an existing rule that differs (directories, base class, ...) is replaced
 	TArray<FPrimaryAssetTypeInfo>& Rules = GameFeatureData->GetPrimaryAssetTypesToScan();
-	if (Rules.ContainsByPredicate([&Info](const FPrimaryAssetTypeInfo& Existing) { return Existing.PrimaryAssetType == Info.PrimaryAssetType; }))
+	FPrimaryAssetTypeInfo* Existing = Rules.FindByPredicate([&Info](const FPrimaryAssetTypeInfo& Rule) { return Rule.PrimaryAssetType == Info.PrimaryAssetType; });
+	if (Existing && FPrimaryAssetTypeInfo::StaticStruct()->CompareScriptStruct(Existing, &Info, PPF_None))
 	{
 		return true;
 	}
 	GameFeatureData->Modify();
-	Rules.Add(Info);
+	if (Existing)
+	{
+		*Existing = Info;
+	}
+	else
+	{
+		Rules.Add(Info);
+	}
 	GameFeatureData->MarkPackageDirty();
 	return true;
 }

@@ -56,6 +56,9 @@ namespace HologramOpacity
 	static constexpr float FogPlaneTolerance = 50.f;
 	// Scale of a hidden instance, like FInstanceOwnershipHandle::HideInstance
 	static constexpr float HiddenScale = 0.001f;
+	// Scale this mod shrinks coloured instances to: below the hidden threshold, but unlike any other hide, so an instance
+	// is only restored while this mod's shrink is still on it
+	static constexpr float OwnHiddenScale = 0.000731f;
 	// Above the game's own post process volumes
 	static constexpr float VolumePriority = 1000.f;
 
@@ -73,9 +76,51 @@ namespace HologramOpacity
 			: 0;
 	}
 
+	/** True for a material of the build gun's helper meshes. This runs every frame for hologram meshes the mod hasn't
+	 *  taken over, so it reads the package name into a stack buffer instead of building the material's path string. */
+	static bool IsBuildGunMaterial(const UMaterialInterface* Material)
+	{
+		const FNameBuilder Package(Material->GetOutermost()->GetFName());
+		return Package.ToView().StartsWith(BuildGunMaterialFolder);
+	}
+
 	static FString Describe(const UObject* Object)
 	{
 		return Object ? Object->GetPathName() : FString(TEXT("None"));
+	}
+
+	// Console command help, also logged when an argument is missing or isn't a number
+	static const TCHAR* const SetUsage = TEXT("HoloOpacity.Set <0..1 | -1>  Override the hologram opacity for testing. -1 goes back to the Options value.");
+	static const TCHAR* const ScanlinesUsage = TEXT("HoloOpacity.Scanlines <1 | 0 | -1>  Override Show Scanlines for testing (1 on, 0 off). -1 goes back to the Options value.");
+	static const TCHAR* const ParamUsage = TEXT("HoloOpacity.Param <parameter> <value>  Tune a scalar parameter of the composite material until the game restarts.");
+
+	static void LogUsage(const TCHAR* Usage)
+	{
+		UE_LOG(LogHologramOpacity, Warning, TEXT("Usage: %s"), Usage);
+	}
+
+	/** Reads console argument Index as a number, or logs the command's usage. The whole argument must be numeric:
+	 *  FCString::Atof reads "off" as 0 and "50%" as 50. */
+	template <typename TNumber>
+	static bool ParseArgument(const TArray<FString>& Args, int32 Index, TNumber& OutValue, const TCHAR* Usage)
+	{
+		if (Args.IsValidIndex(Index) && FCString::IsNumeric(*Args[Index]) && LexTryParseString(OutValue, *Args[Index]))
+		{
+			return true;
+		}
+		LogUsage(Usage);
+		return false;
+	}
+
+	/** The running subsystem for a console command, or null with a warning */
+	static UHologramOpacitySubsystem* CommandTarget()
+	{
+		UHologramOpacitySubsystem* Subsystem = UHologramOpacitySubsystem::GetActive();
+		if (!Subsystem)
+		{
+			UE_LOG(LogHologramOpacity, Warning, TEXT("No active HologramOpacity subsystem"));
+		}
+		return Subsystem;
 	}
 
 	/** Transient actors only: Satisfactory saves actors that implement its save interface, and these don't */
@@ -91,6 +136,12 @@ namespace HologramOpacity
 	static bool IsHiddenScale(const FTransform& Transform)
 	{
 		return Transform.GetScale3D().GetAbsMax() < HiddenScale * 10.f;
+	}
+
+	/** True for an instance still shrunk by this mod (OwnHiddenScale on every axis) */
+	static bool IsOwnHiddenScale(const FTransform& Transform)
+	{
+		return Transform.GetScale3D().Equals(FVector(OwnHiddenScale), OwnHiddenScale * 0.05f);
 	}
 
 	/** The instanced component a coloured instance manager draws its instances with (a reflected private property) */
@@ -127,8 +178,8 @@ namespace HologramOpacity
 		return Copy;
 	}
 
-	/** The outline component's per-actor states. A reflected (UPROPERTY) array, read only. */
-	static const TArray<FActorOutlineState>* OutlineStates(const UFGOutlineComponent* Outline, const TCHAR* PropertyName)
+	/** One of the outline component's reflected (UPROPERTY) arrays of FActorOutlineState, or null if its layout differs */
+	static const FArrayProperty* FindOutlineStatesProperty(const TCHAR* PropertyName)
 	{
 		const FArrayProperty* Property = FindFProperty<FArrayProperty>(UFGOutlineComponent::StaticClass(), PropertyName);
 		const FStructProperty* Inner = Property ? CastField<FStructProperty>(Property->Inner) : nullptr;
@@ -136,7 +187,21 @@ namespace HologramOpacity
 		{
 			return nullptr;
 		}
-		return Property->ContainerPtrToValuePtr<TArray<FActorOutlineState>>(Outline);
+		return Property;
+	}
+
+	/** Whole-actor outline states (ShowOutline), read only */
+	static const TArray<FActorOutlineState>* ActorOutlineStates(const UFGOutlineComponent* Outline)
+	{
+		static const FArrayProperty* Property = FindOutlineStatesProperty(TEXT("mActorOutlineStates"));
+		return Property ? Property->ContainerPtrToValuePtr<TArray<FActorOutlineState>>(Outline) : nullptr;
+	}
+
+	/** Outline states of single meshes of an actor (ShowOutlineForStaticMeshComponent), read only */
+	static const TArray<FActorOutlineState>* ComponentOutlineStates(const UFGOutlineComponent* Outline)
+	{
+		static const FArrayProperty* Property = FindOutlineStatesProperty(TEXT("mComponentSpecifiedActorOutlineStates"));
+		return Property ? Property->ContainerPtrToValuePtr<TArray<FActorOutlineState>>(Outline) : nullptr;
 	}
 
 	static void DumpPrimitive(const TCHAR* Kind, const FName Key, const UPrimitiveComponent* Primitive)
@@ -234,34 +299,55 @@ namespace HologramOpacity
 
 static FAutoConsoleCommand GHoloOpacitySetCmd(
 	TEXT("HoloOpacity.Set"),
-	TEXT("HoloOpacity.Set <0..1 | -1>  Override the hologram opacity for testing. -1 goes back to the Options value."),
+	HologramOpacity::SetUsage,
 	FConsoleCommandWithArgsDelegate::CreateLambda([](const TArray<FString>& Args)
 	{
-		if (UHologramOpacitySubsystem* Subsystem = UHologramOpacitySubsystem::GetActive(); Subsystem && Args.Num() > 0)
+		float Opacity = 0.f;
+		if (!HologramOpacity::ParseArgument(Args, 0, Opacity, HologramOpacity::SetUsage))
 		{
-			Subsystem->SetDebugOpacityOverride(FCString::Atof(*Args[0]));
+			return;
+		}
+		// A fraction, not a percentage: 50 would only clamp to 100%
+		if (Opacity > 1.f)
+		{
+			HologramOpacity::LogUsage(HologramOpacity::SetUsage);
+			return;
+		}
+		if (UHologramOpacitySubsystem* Subsystem = HologramOpacity::CommandTarget())
+		{
+			Subsystem->SetDebugOpacityOverride(Opacity < 0.f ? -1.f : Opacity);
 		}
 	}));
 
 static FAutoConsoleCommand GHoloOpacityScanlinesCmd(
 	TEXT("HoloOpacity.Scanlines"),
-	TEXT("HoloOpacity.Scanlines <1 | 0 | -1>  Override Show Scanlines for testing (1 on, 0 off). -1 goes back to the Options value."),
+	HologramOpacity::ScanlinesUsage,
 	FConsoleCommandWithArgsDelegate::CreateLambda([](const TArray<FString>& Args)
 	{
-		if (UHologramOpacitySubsystem* Subsystem = UHologramOpacitySubsystem::GetActive(); Subsystem && Args.Num() > 0)
+		int32 Value = 0;
+		if (!HologramOpacity::ParseArgument(Args, 0, Value, HologramOpacity::ScanlinesUsage))
 		{
-			Subsystem->SetDebugScanlinesOverride(FCString::Atoi(*Args[0]));
+			return;
+		}
+		if (UHologramOpacitySubsystem* Subsystem = HologramOpacity::CommandTarget())
+		{
+			Subsystem->SetDebugScanlinesOverride(Value);
 		}
 	}));
 
 static FAutoConsoleCommand GHoloOpacityParamCmd(
 	TEXT("HoloOpacity.Param"),
-	TEXT("HoloOpacity.Param <parameter> <value>  Tune a scalar parameter of the composite material until the game restarts."),
+	HologramOpacity::ParamUsage,
 	FConsoleCommandWithArgsDelegate::CreateLambda([](const TArray<FString>& Args)
 	{
-		if (UHologramOpacitySubsystem* Subsystem = UHologramOpacitySubsystem::GetActive(); Subsystem && Args.Num() > 1)
+		float Value = 0.f;
+		if (!HologramOpacity::ParseArgument(Args, 1, Value, HologramOpacity::ParamUsage))
 		{
-			Subsystem->SetCompositeParameter(FName(*Args[0]), FCString::Atof(*Args[1]));
+			return;
+		}
+		if (UHologramOpacitySubsystem* Subsystem = HologramOpacity::CommandTarget())
+		{
+			Subsystem->SetCompositeParameter(FName(*Args[0]), Value);
 		}
 	}));
 
@@ -270,13 +356,9 @@ static FAutoConsoleCommand GHoloOpacityDumpCmd(
 	TEXT("HoloOpacity.Dump  Log the settings, the composite, every hologram mesh and every dismantle highlight."),
 	FConsoleCommandDelegate::CreateLambda([]()
 	{
-		if (UHologramOpacitySubsystem* Subsystem = UHologramOpacitySubsystem::GetActive())
+		if (UHologramOpacitySubsystem* Subsystem = HologramOpacity::CommandTarget())
 		{
 			Subsystem->DumpState();
-		}
-		else
-		{
-			UE_LOG(LogHologramOpacity, Warning, TEXT("No active HologramOpacity subsystem"));
 		}
 	}));
 
@@ -339,6 +421,14 @@ UWorld* UHologramOpacitySubsystem::GetTickableGameObjectWorld() const
 // Settings
 // ---------------------------------------------------------------------------------------------------------------------
 
+void UHologramOpacitySubsystem::FindSettings()
+{
+	UFGGameUserSettings* GameUserSettings = UFGGameUserSettings::GetFGGameUserSettings();
+	const bool bReady = GameUserSettings && GameUserSettings->HasInitialized();
+	OpacitySetting = bReady ? GameUserSettings->FindUserSetting(SettingId) : nullptr;
+	ScanlinesSetting = bReady ? GameUserSettings->FindUserSetting(ScanlinesSettingId) : nullptr;
+}
+
 float UHologramOpacitySubsystem::ReadOpacitySetting() const
 {
 	if (DebugOpacityOverride >= 0.f)
@@ -346,12 +436,7 @@ float UHologramOpacitySubsystem::ReadOpacitySetting() const
 		return FMath::Clamp(DebugOpacityOverride, 0.f, 1.f);
 	}
 
-	UFGGameUserSettings* GameUserSettings = UFGGameUserSettings::GetFGGameUserSettings();
-	if (!GameUserSettings || !GameUserSettings->HasInitialized())
-	{
-		return 1.f;
-	}
-	const UFGUserSettingApplyType* Setting = GameUserSettings->FindUserSetting(SettingId);
+	const UFGUserSettingApplyType* Setting = OpacitySetting.Get();
 	if (!Setting)
 	{
 		return 1.f;
@@ -385,12 +470,7 @@ bool UHologramOpacitySubsystem::ReadScanlinesSetting() const
 		return DebugScanlinesOverride != 0;
 	}
 
-	UFGGameUserSettings* GameUserSettings = UFGGameUserSettings::GetFGGameUserSettings();
-	if (!GameUserSettings || !GameUserSettings->HasInitialized())
-	{
-		return true;
-	}
-	const UFGUserSettingApplyType* Setting = GameUserSettings->FindUserSetting(ScanlinesSettingId);
+	const UFGUserSettingApplyType* Setting = ScanlinesSetting.Get();
 	if (!Setting)
 	{
 		return true;
@@ -439,7 +519,7 @@ bool UHologramOpacitySubsystem::IsHologramBodyMesh(const UMeshComponent* Mesh)
 	for (int32 Index = 0; Index < Mesh->GetNumMaterials(); ++Index)
 	{
 		const UMaterialInterface* Material = Mesh->GetMaterial(Index);
-		if (Material && Material->GetPathName().StartsWith(HologramOpacity::BuildGunMaterialFolder))
+		if (Material && HologramOpacity::IsBuildGunMaterial(Material))
 		{
 			return false;
 		}
@@ -586,20 +666,15 @@ void UHologramOpacitySubsystem::UpdateComposite(UWorld* World, const TArray<UMes
 void UHologramOpacitySubsystem::ScanDismantle(UWorld* World, FHologramOpacityDismantleScan& Out)
 {
 	const UFGOutlineComponent* Outline = UFGOutlineComponent::Get(World);
-	const TArray<FActorOutlineState>* States = Outline ? HologramOpacity::OutlineStates(Outline, TEXT("mActorOutlineStates")) : nullptr;
-	if (!States)
+	if (!Outline)
 	{
 		return;
 	}
-	for (const FActorOutlineState& State : *States)
+
+	// A dismantle highlight's proxies, and the meshes of its actor that it marks (each actor's meshes scanned once)
+	TSet<const AActor*> Scanned;
+	auto AddHighlight = [&Out, &Scanned](const FActorOutlineState& State, AActor* Actor)
 	{
-		AActor* Actor = State.Actor;
-		// Highlights of the proxies alone stay as the game draws them (which real meshes they stand for is unknown)
-		if (State.OutlineColor != EOutlineColor::OC_DISMANTLE || !IsValid(Actor) || State.OnlyHighlightProxies)
-		{
-			continue;
-		}
-		Out.Actors.Add(Actor);
 		for (const TPair<FName, TObjectPtr<UStaticMeshComponent>>& Pair : State.OutlineProxies)
 		{
 			if (IsValid(Pair.Value))
@@ -614,6 +689,12 @@ void UHologramOpacitySubsystem::ScanDismantle(UWorld* World, FHologramOpacityDis
 				Out.Proxies.Add(Pair.Value);
 			}
 		}
+		bool bAlreadyScanned = false;
+		Scanned.Add(Actor, &bAlreadyScanned);
+		if (bAlreadyScanned)
+		{
+			return;
+		}
 		TInlineComponentArray<UPrimitiveComponent*> Primitives(Actor);
 		for (UPrimitiveComponent* Primitive : Primitives)
 		{
@@ -623,47 +704,87 @@ void UHologramOpacitySubsystem::ScanDismantle(UWorld* World, FHologramOpacityDis
 				Out.Meshes.Add(Primitive);
 			}
 		}
+	};
+	// Highlights of the proxies alone stay as the game draws them (which real meshes they stand for is unknown)
+	auto DismantleActor = [](const FActorOutlineState& State) -> AActor*
+	{
+		AActor* Actor = State.Actor;
+		return State.OutlineColor == EOutlineColor::OC_DISMANTLE && IsValid(Actor) && !State.OnlyHighlightProxies ? Actor : nullptr;
+	};
+
+	// Whole actors: their meshes, and below their shared instances and fog planes
+	if (const TArray<FActorOutlineState>* States = HologramOpacity::ActorOutlineStates(Outline))
+	{
+		for (const FActorOutlineState& State : *States)
+		{
+			if (AActor* Actor = DismantleActor(State))
+			{
+				Out.Actors.Add(Actor);
+				AddHighlight(State, Actor);
+			}
+		}
+	}
+	// Single meshes of an actor: just the marked mesh; the actor's shared instances and fog planes aren't highlighted
+	if (const TArray<FActorOutlineState>* States = HologramOpacity::ComponentOutlineStates(Outline))
+	{
+		for (const FActorOutlineState& State : *States)
+		{
+			if (AActor* Actor = DismantleActor(State))
+			{
+				AddHighlight(State, Actor);
+			}
+		}
 	}
 
 	// The black fog planes inside the buildings' openings are pooled meshes of the pool root, placed at the building's
 	// fog plane transforms: they go with the building
-	TArray<FVector> FogPlanes;
+	struct FFogPlane
+	{
+		FVector Location;
+		const UStaticMesh* Mesh;
+	};
+	TArray<FFogPlane> FogPlanes;
+	TSet<const UStaticMesh*> FogPlaneMeshes;
 	for (const AActor* Actor : Out.Actors)
 	{
 		const AFGBuildable* Buildable = Cast<AFGBuildable>(Actor);
-		if (const UFGBuildableSparseDataObject* SparseData = Buildable ? Buildable->GetBuildableSparseData() : nullptr)
+		const UFGBuildableSparseDataObject* SparseData = Buildable ? Buildable->GetBuildableSparseData() : nullptr;
+		if (!SparseData || !SparseData->FogPlaneMesh)
 		{
-			for (const FTransform& Relative : SparseData->mFogPlaneLocations)
-			{
-				FogPlanes.Add((Relative * Actor->GetActorTransform()).GetLocation());
-			}
+			continue;
+		}
+		FogPlaneMeshes.Add(SparseData->FogPlaneMesh);
+		for (const FTransform& Relative : SparseData->mFogPlaneLocations)
+		{
+			FogPlanes.Add({(Relative * Actor->GetActorTransform()).GetLocation(), SparseData->FogPlaneMesh});
 		}
 	}
 	if (FogPlanes.Num() == 0)
 	{
 		return;
 	}
+	// Only pooled meshes of a fog plane mesh: other pooled meshes (lights, signs) can sit just as close
 	TArray<UStaticMeshComponent*> Pooled;
 	for (TActorIterator<APoolRoot> It(World); It; ++It)
 	{
 		for (UActorComponent* Component : It->Components)
 		{
 			UStaticMeshComponent* Mesh = Cast<UStaticMeshComponent>(Component);
-			if (IsValid(Mesh) && Mesh->IsRegistered() && Mesh->IsVisible())
+			if (IsValid(Mesh) && FogPlaneMeshes.Contains(Mesh->GetStaticMesh()) && Mesh->IsRegistered() && Mesh->IsVisible())
 			{
 				Pooled.Add(Mesh);
 			}
 		}
 	}
-	// Each fog plane is the nearest pooled mesh, if one is close enough
-	for (const FVector& FogPlane : FogPlanes)
+	// Each fog plane is the nearest pooled mesh of its mesh, if one is close enough
+	for (const FFogPlane& FogPlane : FogPlanes)
 	{
 		UStaticMeshComponent* Nearest = nullptr;
 		double NearestDistance = FMath::Square(HologramOpacity::FogPlaneTolerance);
 		for (UStaticMeshComponent* Mesh : Pooled)
 		{
-			const double Distance = FVector::DistSquared(Mesh->GetComponentLocation(), FogPlane);
-			if (Distance < NearestDistance)
+			const double Distance = FVector::DistSquared(Mesh->GetComponentLocation(), FogPlane.Location);
+			if (Distance < NearestDistance && Mesh->GetStaticMesh() == FogPlane.Mesh)
 			{
 				Nearest = Mesh;
 				NearestDistance = Distance;
@@ -679,7 +800,7 @@ void UHologramOpacitySubsystem::ScanDismantle(UWorld* World, FHologramOpacityDis
 void UHologramOpacitySubsystem::UpdateDismantle(UWorld* World, const FHologramOpacityDismantleScan& Dismantle, TArray<UPrimitiveComponent*>& OutDrawn)
 {
 	// Shared instances: hidden while their actor is highlighted (the capture draws copies)
-	bool bInstancesChanged = false;
+	bool bRemoved = false;
 	const TSet<AActor*> Highlighted(Dismantle.Actors);
 	for (auto It = DismantleActors.CreateIterator(); It; ++It)
 	{
@@ -687,15 +808,16 @@ void UHologramOpacitySubsystem::UpdateDismantle(UWorld* World, const FHologramOp
 		{
 			ShowInstances(It.Value());
 			It.RemoveCurrent();
-			bInstancesChanged = true;
+			bRemoved = true;
 		}
 	}
+	TArray<AActor*> Added;
 	for (AActor* Actor : Dismantle.Actors)
 	{
 		if (!DismantleActors.Contains(Actor))
 		{
 			DismantleActors.Add(Actor, HideInstances(Actor));
-			bInstancesChanged = true;
+			Added.Add(Actor);
 		}
 	}
 	bool bCopiesValid = true;
@@ -704,9 +826,16 @@ void UHologramOpacitySubsystem::UpdateDismantle(UWorld* World, const FHologramOp
 		const UInstancedStaticMeshComponent* Copy = Pair.Value.Get();
 		bCopiesValid &= Copy && Copy->GetOwner() == Capture.Get() && Pair.Key.IsValid();
 	}
-	if (bInstancesChanged || !bCopiesValid)
+	// Newly highlighted actors (a growing mass-dismantle selection) only add their instances; anything else recreates
+	// them all
+	if (bRemoved || !bCopiesValid || bRefreshInstanceCopies)
 	{
-		RebuildInstanceCopies();
+		UpdateInstanceCopies(nullptr);
+		bRefreshInstanceCopies = false;
+	}
+	else if (Added.Num() > 0)
+	{
+		UpdateInstanceCopies(&Added);
 	}
 
 	// The buildings' own meshes: drawn by the capture, and still casting their shadow in the main view
@@ -752,18 +881,16 @@ TArray<FHologramOpacityHiddenInstance> UHologramOpacitySubsystem::HideInstances(
 {
 	TArray<FHologramOpacityHiddenInstance> Hidden;
 
-	// Abstract instances (lightweight buildables and building parts), hidden with the game's own call
-	if (const IAbstractInstanceInterface* Instances = Cast<IAbstractInstanceInterface>(Actor))
+	// Abstract instances (lightweight buildables and building parts), hidden with the game's own call through the
+	// building's ownership handles (static and dynamic)
+	if (const AFGBuildable* Buildable = Cast<AFGBuildable>(Actor))
 	{
-		const FInstanceHandleArray Handles = Instances->GetLightweightInstanceHandles();
-		for (const FInstanceHandlePtr& ReadOnly : Handles.HandleArray)
+		for (const FInstanceOwnerHandlePtr& Handle : Buildable->mInstanceHandles)
 		{
-			if (!ReadOnly.IsValid() || !ReadOnly->IsInstanced())
+			if (!Handle.IsValid() || !Handle->IsInstanced())
 			{
 				continue;
 			}
-			// The actor's handles are ownership handles (FInstanceOwnerHandlePtr) handed out read-only
-			const TSharedPtr<FInstanceOwnershipHandle, ESPMode::NotThreadSafe> Handle = StaticCastSharedPtr<FInstanceOwnershipHandle>(ReadOnly);
 			UInstancedStaticMeshComponent* Source = Handle->GetInstanceComponent();
 			FTransform Transform;
 			// Leave instances the game has hidden itself
@@ -790,7 +917,7 @@ TArray<FHologramOpacityHiddenInstance> UHologramOpacitySubsystem::HideInstances(
 			continue;
 		}
 		FTransform Shrunk = Transform;
-		Shrunk.SetScale3D(FVector(HologramOpacity::HiddenScale));
+		Shrunk.SetScale3D(FVector(HologramOpacity::OwnHiddenScale));
 		Source->UpdateInstanceTransform(Index, Shrunk, false, true, true);
 		FHologramOpacityHiddenInstance& Entry = Hidden.AddDefaulted_GetRef();
 		Entry.ColoredMesh = Mesh;
@@ -806,17 +933,18 @@ void UHologramOpacitySubsystem::ShowInstances(const TArray<FHologramOpacityHidde
 	{
 		if (Entry.Handle.IsValid())
 		{
-			// Does nothing once the instance is removed or shown again
+			// Does nothing once the instance is removed or shown again. (The handle has no record of who hid it, so an
+			// instance the game hid as well while it was highlighted is shown too; leaving one hidden for good is worse.)
 			Entry.Handle->UnHideInstance(true);
 		}
 		else if (const UFGColoredInstanceMeshProxy* Mesh = Entry.ColoredMesh.Get())
 		{
-			// Only while it is still the same instance, still shrunk
+			// Only while it is still the same instance, still shrunk by this mod (not reset or hidden by the game since)
 			UInstancedStaticMeshComponent* Source = Entry.Source.Get();
 			const int32 Index = Mesh->mInstanceHandle.GetHandleID();
 			FTransform Transform;
 			if (Source && Mesh->mInstanceHandle.IsInstanced() && HologramOpacity::ColoredInstanceComponent(Mesh) == Source
-				&& Source->GetInstanceTransform(Index, Transform, false) && HologramOpacity::IsHiddenScale(Transform))
+				&& Source->GetInstanceTransform(Index, Transform, false) && HologramOpacity::IsOwnHiddenScale(Transform))
 			{
 				Source->UpdateInstanceTransform(Index, Entry.OriginalTransform, false, true, true);
 			}
@@ -824,7 +952,7 @@ void UHologramOpacitySubsystem::ShowInstances(const TArray<FHologramOpacityHidde
 	}
 }
 
-void UHologramOpacitySubsystem::RebuildInstanceCopies()
+void UHologramOpacitySubsystem::UpdateInstanceCopies(const TArray<AActor*>* Added)
 {
 	struct FCopiedInstance
 	{
@@ -832,11 +960,11 @@ void UHologramOpacitySubsystem::RebuildInstanceCopies()
 		TArray<float> CustomData;
 	};
 
-	// Every hidden instance, by the component that draws it, with its paint and other per-instance data
+	// The hidden instances to copy, by the component that draws them, with their paint and other per-instance data
 	TMap<UInstancedStaticMeshComponent*, TArray<FCopiedInstance>> BySource;
-	for (const TPair<TWeakObjectPtr<AActor>, TArray<FHologramOpacityHiddenInstance>>& Pair : DismantleActors)
+	auto Collect = [&BySource](const TArray<FHologramOpacityHiddenInstance>& Entries)
 	{
-		for (const FHologramOpacityHiddenInstance& Entry : Pair.Value)
+		for (const FHologramOpacityHiddenInstance& Entry : Entries)
 		{
 			UInstancedStaticMeshComponent* Source = Entry.Source.Get();
 			int32 Index = INDEX_NONE;
@@ -858,6 +986,12 @@ void UHologramOpacitySubsystem::RebuildInstanceCopies()
 			else if (const UFGColoredInstanceMeshProxy* Mesh = Entry.ColoredMesh.Get(); Mesh && Mesh->mInstanceHandle.IsInstanced())
 			{
 				Index = Mesh->mInstanceHandle.GetHandleID();
+				// Not once the game has reset or hidden it itself: the world draws (or hides) it again
+				FTransform Current;
+				if (!Source->GetInstanceTransform(Index, Current, false) || !HologramOpacity::IsOwnHiddenScale(Current))
+				{
+					continue;
+				}
 				Transform = Entry.OriginalTransform * Source->GetComponentTransform();
 			}
 			else
@@ -872,26 +1006,42 @@ void UHologramOpacitySubsystem::RebuildInstanceCopies()
 				Copied.CustomData = TArray<float>(Source->PerInstanceSMCustomData.GetData() + Index * Floats, Floats);
 			}
 		}
-	}
-
-	// Copies whose source has nothing hidden any more, or that belong to an old capture actor, go away
-	AActor* Owner = Capture.Get();
-	for (auto It = InstanceCopies.CreateIterator(); It; ++It)
+	};
+	if (Added)
 	{
-		UInstancedStaticMeshComponent* Copy = It.Value().Get();
-		if (!Copy || !Owner || Copy->GetOwner() != Owner || !BySource.Contains(It.Key().Get()))
+		for (AActor* Actor : *Added)
 		{
-			if (Copy)
+			if (const TArray<FHologramOpacityHiddenInstance>* Entries = DismantleActors.Find(Actor))
 			{
-				Copy->DestroyComponent();
+				Collect(*Entries);
 			}
-			It.RemoveCurrent();
 		}
 	}
-	CopyComponents.RemoveAll([this](const TObjectPtr<UInstancedStaticMeshComponent>& Copy)
+	else
 	{
-		return !IsValid(Copy) || !InstanceCopies.FindKey(Copy.Get());
-	});
+		for (const TPair<TWeakObjectPtr<AActor>, TArray<FHologramOpacityHiddenInstance>>& Pair : DismantleActors)
+		{
+			Collect(Pair.Value);
+		}
+	}
+
+	// On a full update, copies whose source has nothing hidden any more, or that belong to an old capture actor, go away
+	AActor* Owner = Capture.Get();
+	if (!Added)
+	{
+		for (auto It = InstanceCopies.CreateIterator(); It; ++It)
+		{
+			UInstancedStaticMeshComponent* Copy = It.Value().Get();
+			if (!Copy || !Owner || Copy->GetOwner() != Owner || !BySource.Contains(It.Key().Get()))
+			{
+				if (Copy)
+				{
+					Copy->DestroyComponent();
+				}
+				It.RemoveCurrent();
+			}
+		}
+	}
 	if (!Owner)
 	{
 		return;
@@ -906,11 +1056,14 @@ void UHologramOpacitySubsystem::RebuildInstanceCopies()
 		}
 		if (!Copy)
 		{
+			// Kept alive by its owner, the capture actor
 			Copy = HologramOpacity::CreateInstanceCopy(Pair.Key, Owner);
 			InstanceCopies.Add(Pair.Key, Copy);
-			CopyComponents.Add(Copy);
 		}
-		Copy->ClearInstances();
+		else if (!Added)
+		{
+			Copy->ClearInstances();
+		}
 		for (const FCopiedInstance& Copied : Pair.Value)
 		{
 			const int32 NewIndex = Copy->AddInstance(Copied.Transform, true);
@@ -982,7 +1135,7 @@ void UHologramOpacitySubsystem::StopDismantle()
 		}
 	}
 	InstanceCopies.Reset();
-	CopyComponents.Reset();
+	bRefreshInstanceCopies = false;
 	SetMainViewHidden(nullptr, TArray<UPrimitiveComponent*>());
 }
 
@@ -1043,6 +1196,22 @@ void UHologramOpacitySubsystem::Tick(float DeltaTime)
 		return;
 	}
 
+	// Once a second: find the two settings again (their values are read every frame), pick up colour changes from the
+	// Holograms options, and refresh the copies of hidden instances (a building repainted while highlighted)
+	const double Now = FPlatformTime::Seconds();
+	if (Now - LastSlowCheck > 1.0)
+	{
+		LastSlowCheck = Now;
+		FindSettings();
+		bRefreshInstanceCopies = InstanceCopies.Num() > 0;
+		const FLinearColor Previous[4] = {Colors[0], Colors[1], Colors[2], Colors[3]};
+		ReadColors();
+		for (int32 Index = 0; Index < 4; ++Index)
+		{
+			bParametersDirty |= !Previous[Index].Equals(Colors[Index]);
+		}
+	}
+
 	const float NewOpacity = ReadOpacitySetting();
 	const bool bNewScanlines = ReadScanlinesSetting();
 	if (!FMath::IsNearlyEqual(NewOpacity, CurrentOpacity, 0.0005f) || bNewScanlines != bShowScanlines)
@@ -1062,6 +1231,11 @@ void UHologramOpacitySubsystem::Tick(float DeltaTime)
 		}
 		return;
 	}
+	// The composite's content or actors are missing (logged once): holograms stay vanilla, so there is nothing to scan
+	if (bCompositeFailed)
+	{
+		return;
+	}
 
 	// The hologram bodies to draw, and the most severe state among their holograms
 	TArray<UMeshComponent*> Bodies;
@@ -1077,7 +1251,7 @@ void UHologramOpacitySubsystem::Tick(float DeltaTime)
 		TInlineComponentArray<UMeshComponent*> Meshes(Hologram);
 		for (UMeshComponent* Mesh : Meshes)
 		{
-			// Meshes already hidden were classified before; the full check reads material paths
+			// Meshes already hidden were classified before; the full check reads every material's package name
 			if (IsValid(Mesh) && (HiddenMeshes.Contains(Mesh) ? static_cast<bool>(Mesh->bRenderCustomDepth) : IsHologramBodyMesh(Mesh)))
 			{
 				Bodies.Add(Mesh);
@@ -1102,18 +1276,6 @@ void UHologramOpacitySubsystem::Tick(float DeltaTime)
 	{
 		StopComposite();
 		return;
-	}
-
-	const double Now = FPlatformTime::Seconds();
-	if (Now - LastColorCheck > 1.0)
-	{
-		LastColorCheck = Now;
-		const FLinearColor Previous[4] = {Colors[0], Colors[1], Colors[2], Colors[3]};
-		ReadColors();
-		for (int32 Index = 0; Index < 4; ++Index)
-		{
-			bParametersDirty |= !Previous[Index].Equals(Colors[Index]);
-		}
 	}
 
 	UpdateComposite(World, Bodies, HologramState, Dismantle);
@@ -1152,18 +1314,23 @@ void UHologramOpacitySubsystem::SetCompositeParameter(FName Parameter, float Val
 void UHologramOpacitySubsystem::DumpState()
 {
 	UE_LOG(LogHologramOpacity, Display, TEXT("==== HologramOpacity dump ===="));
-	UFGGameUserSettings* GameUserSettings = UFGGameUserSettings::GetFGGameUserSettings();
-	for (const TCHAR* Id : {SettingId, ScanlinesSettingId})
+	FindSettings();
+	struct FNamedSetting
 	{
-		const UFGUserSettingApplyType* Setting = GameUserSettings && GameUserSettings->HasInitialized() ? GameUserSettings->FindUserSetting(Id) : nullptr;
-		if (Setting)
+		const TCHAR* Id;
+		const UFGUserSettingApplyType* Setting;
+	};
+	const FNamedSetting Settings[] = {{SettingId, OpacitySetting.Get()}, {ScanlinesSettingId, ScanlinesSetting.Get()}};
+	for (const FNamedSetting& Named : Settings)
+	{
+		if (Named.Setting)
 		{
-			const FVariant Value = Setting->GetDisplayValue();
-			UE_LOG(LogHologramOpacity, Display, TEXT("Setting %s: type %d, value '%s'"), Id, static_cast<int32>(Value.GetType()), *UFGUserSettingApplyType::VariantAsString(Value));
+			const FVariant Value = Named.Setting->GetDisplayValue();
+			UE_LOG(LogHologramOpacity, Display, TEXT("Setting %s: type %d, value '%s'"), Named.Id, static_cast<int32>(Value.GetType()), *UFGUserSettingApplyType::VariantAsString(Value));
 		}
 		else
 		{
-			UE_LOG(LogHologramOpacity, Display, TEXT("Setting %s NOT registered"), Id);
+			UE_LOG(LogHologramOpacity, Display, TEXT("Setting %s NOT registered"), Named.Id);
 		}
 	}
 
@@ -1207,7 +1374,7 @@ void UHologramOpacitySubsystem::DumpState()
 	}
 
 	// Outlined actors (dismantle mode and other highlights)
-	if (GameUserSettings)
+	if (const UFGGameUserSettings* GameUserSettings = UFGGameUserSettings::GetFGGameUserSettings())
 	{
 		UE_LOG(LogHologramOpacity, Display, TEXT("Dismantle colour %s"), *GameUserSettings->GetHologramDismantleColor().ToString());
 	}
@@ -1217,9 +1384,18 @@ void UHologramOpacitySubsystem::DumpState()
 		UE_LOG(LogHologramOpacity, Display, TEXT("No outline component"));
 		return;
 	}
-	for (const TCHAR* PropertyName : {TEXT("mActorOutlineStates"), TEXT("mComponentSpecifiedActorOutlineStates")})
+	struct FNamedStates
 	{
-		const TArray<FActorOutlineState>* States = HologramOpacity::OutlineStates(Outline, PropertyName);
+		const TCHAR* PropertyName;
+		const TArray<FActorOutlineState>* States;
+	};
+	const FNamedStates OutlineLists[] = {
+		{TEXT("mActorOutlineStates"), HologramOpacity::ActorOutlineStates(Outline)},
+		{TEXT("mComponentSpecifiedActorOutlineStates"), HologramOpacity::ComponentOutlineStates(Outline)}};
+	for (const FNamedStates& List : OutlineLists)
+	{
+		const TCHAR* PropertyName = List.PropertyName;
+		const TArray<FActorOutlineState>* States = List.States;
 		UE_LOG(LogHologramOpacity, Display, TEXT("Outline %s: %d states"), PropertyName, States ? States->Num() : -1);
 		if (States)
 		{
