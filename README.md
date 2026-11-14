@@ -21,7 +21,7 @@ Find the settings in **Options > User Interface > Holograms/Build Mode**
 
 ## Install
 - **Satisfactory Mod Manager:** [Install from the app in one click!](https://ficsit.app/mod/54DypBRit5b39v)
-- Uninstall: delete `FactoryGame\Mods\GameFeatures\HologramOpacity`.
+- Uninstall: delete `FactoryGame\Mods\GameFeatures\BuildHologramImprovements`.
 
 ## Known Issues
 - Build and Dismantle animations are still vanilla.
@@ -33,17 +33,17 @@ writes a custom depth stencil value (5 valid, 3 soft clearance, 6 invalid). The 
 `PPI_OutlineHologram` then recolours those pixels with the hologram colour and scan lines. That result is opaque, so
 below 100%, and with scan lines off, the mod takes the hologram out of the main view and draws it itself. It never
 changes a material:
-- `/HologramOpacity/Settings/US_HologramOpacity` is a native `FGUserSetting` (slider 0..1, shown as 0..100, applied
+- `/BuildHologramImprovements/Settings/US_HologramOpacity` is a native `FGUserSetting` (slider 0..1, shown as 0..100, applied
   instantly) registered through the mod's `FGGameFeatureData` scan rule, so it lives in the game's own menu.
-  `/HologramOpacity/Settings/US_HologramScanlines` is the "Show Scanlines" checkbox right under it.
+  `/BuildHologramImprovements/Settings/US_HologramScanlines` is the "Show Scanlines" checkbox right under it.
 - `UHologramOpacitySubsystem` (game instance subsystem) reads both settings every frame. It finds the hologram body
   meshes of every live `AFGHologram` (custom depth on, stencil 3/5/6, no build gun helper material) and makes them
   visible to scene captures only, so the main view and the game's post process stop drawing them. Guidelines,
   clearance boxes and connection arrows are untouched.
 - A transient `SceneCapture2D` with the main view's camera, resolution and jitter (`bMainViewCamera`) draws just those
-  meshes, lit and with their own materials, into `/HologramOpacity/Materials/RT_HologramOpacityCapture` (colour in
+  meshes, lit and with their own materials, into `/BuildHologramImprovements/Materials/RT_HologramOpacityCapture` (colour in
   RGB, depth in A). Lumen, ambient occlusion, screen-space reflections, fog and motion blur are off for it.
-- The post process material `/HologramOpacity/Materials/M_HologramOpacityComposite`, on a transient unbound post
+- The post process material `/BuildHologramImprovements/Materials/M_HologramOpacityComposite`, on a transient unbound post
   process volume, draws the captured hologram in the colour from the Holograms options (the most severe state among
   the holograms on screen), with or without screen-space scan lines, and blends it over the scene at the slider's
   opacity. Where the world or a build gun helper marker (custom depth) is in front, the hologram stays behind it.
@@ -63,7 +63,7 @@ changes a material:
     instances such as production indicators by shrinking them) and gives the capture transient copies with the same
     mesh, materials, transform and per-instance data (paint, conveyor belt curves). Glass is the exception: a
     translucent material writes no depth, and the composite only draws captured pixels that have one, so on the copies
-    glass gets the opaque `/HologramOpacity/Materials/M_HologramOpacityGlass` and window panes stay in the highlight;
+    glass gets the opaque `/BuildHologramImprovements/Materials/M_HologramOpacityGlass` and window panes stay in the highlight;
   - draws all of it in the dismantle colour, with the game's contour (`EdgeIntensity`).
 
   When the highlight ends, or at 100% with scan lines on, every change is undone. A building that was dismantled

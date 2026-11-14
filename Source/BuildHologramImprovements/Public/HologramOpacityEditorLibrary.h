@@ -14,7 +14,7 @@ class UGameFeatureData;
  * (Python can't set EditDefaultsOnly properties on instanced sub-objects such as the slider value selector.)
  */
 UCLASS()
-class HOLOGRAMOPACITY_API UHologramOpacityEditorLibrary : public UBlueprintFunctionLibrary
+class BUILDHOLOGRAMIMPROVEMENTS_API UHologramOpacityEditorLibrary : public UBlueprintFunctionLibrary
 {
 	GENERATED_BODY()
 

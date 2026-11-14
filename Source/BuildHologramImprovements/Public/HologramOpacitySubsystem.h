@@ -78,14 +78,14 @@ struct FHologramOpacityHiddenInstance
  * Nanite base pass, so the capture runs as its own scene renderer.)
  */
 UCLASS()
-class HOLOGRAMOPACITY_API UHologramOpacitySubsystem : public UGameInstanceSubsystem, public FTickableGameObject
+class BUILDHOLOGRAMIMPROVEMENTS_API UHologramOpacitySubsystem : public UGameInstanceSubsystem, public FTickableGameObject
 {
 	GENERATED_BODY()
 
 public:
-	/** StrId of the FGUserSetting asset /HologramOpacity/Settings/US_HologramOpacity */
+	/** StrId of the FGUserSetting asset /BuildHologramImprovements/Settings/US_HologramOpacity */
 	static const TCHAR* SettingId;
-	/** StrId of the FGUserSetting asset /HologramOpacity/Settings/US_HologramScanlines */
+	/** StrId of the FGUserSetting asset /BuildHologramImprovements/Settings/US_HologramScanlines */
 	static const TCHAR* ScanlinesSettingId;
 
 	// Begin USubsystem

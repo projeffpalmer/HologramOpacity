@@ -40,11 +40,11 @@ const TCHAR* UHologramOpacitySubsystem::ScanlinesSettingId = TEXT("HologramOpaci
 namespace HologramOpacity
 {
 	// Post process material that draws the hologram from the capture's buffers (this mod's content)
-	static const TCHAR* CompositeMaterialPath = TEXT("/HologramOpacity/Materials/M_HologramOpacityComposite.M_HologramOpacityComposite");
+	static const TCHAR* CompositeMaterialPath = TEXT("/BuildHologramImprovements/Materials/M_HologramOpacityComposite.M_HologramOpacityComposite");
 	// The captured hologram (lit colour in RGB, depth in A), read by the composite material (this mod's content)
-	static const TCHAR* CaptureTargetPath = TEXT("/HologramOpacity/Materials/RT_HologramOpacityCapture.RT_HologramOpacityCapture");
+	static const TCHAR* CaptureTargetPath = TEXT("/BuildHologramImprovements/Materials/RT_HologramOpacityCapture.RT_HologramOpacityCapture");
 	// Opaque stand-in for glass on the capture's copies of shared instances (this mod's content)
-	static const TCHAR* GlassMaterialPath = TEXT("/HologramOpacity/Materials/M_HologramOpacityGlass.M_HologramOpacityGlass");
+	static const TCHAR* GlassMaterialPath = TEXT("/BuildHologramImprovements/Materials/M_HologramOpacityGlass.M_HologramOpacityGlass");
 	// Materials of the build gun's helper meshes (guidelines, clearance boxes, arrows, connection markers)
 	static const TCHAR* BuildGunMaterialFolder = TEXT("/Game/FactoryGame/Equipment/BuildGun/");
 	// Custom depth stencil values the game writes on hologram bodies (PPI_OutlineHologram bitmask values)

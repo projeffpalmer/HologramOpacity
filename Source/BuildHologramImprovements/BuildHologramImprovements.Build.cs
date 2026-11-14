@@ -1,8 +1,8 @@
 using UnrealBuildTool;
 
-public class HologramOpacity : ModuleRules
+public class BuildHologramImprovements : ModuleRules
 {
-	public HologramOpacity(ReadOnlyTargetRules Target) : base(Target)
+	public BuildHologramImprovements(ReadOnlyTargetRules Target) : base(Target)
 	{
 		PCHUsage = PCHUsageMode.UseExplicitOrSharedPCHs;
 		CppStandard = CppStandardVersion.Cpp20;

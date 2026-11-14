@@ -3,16 +3,22 @@
     UnrealEditor-Cmd.exe <Project>/FactoryGame.uproject -run=pythonscript -script="<this file>" -unattended -nop4 -nosplash
 
 Creates:
-  /HologramOpacity/HologramOpacity                      FGGameFeatureData with the asset manager scan rules
-  /HologramOpacity/Settings/US_HologramOpacity          FGUserSetting slider in Options > User Interface > Holograms
-  /HologramOpacity/Settings/US_HologramScanlines        FGUserSetting "Show Scanlines" checkbox right under the slider
-  /HologramOpacity/Materials/RT_HologramOpacityCapture  render target of the hologram capture (lit colour + depth)
-  /HologramOpacity/Materials/M_HologramOpacityComposite post process material that draws the captured hologram
-  /HologramOpacity/Materials/M_HologramOpacityGlass     opaque stand-in for glass in the capture of dismantle highlights
+  /BuildHologramImprovements/BuildHologramImprovements
+      FGGameFeatureData with the asset manager scan rules
+  /BuildHologramImprovements/Settings/US_HologramOpacity
+      FGUserSetting slider in Options > User Interface > Holograms
+  /BuildHologramImprovements/Settings/US_HologramScanlines
+      FGUserSetting "Show Scanlines" checkbox right under the slider
+  /BuildHologramImprovements/Materials/RT_HologramOpacityCapture
+      render target of the hologram capture (lit colour + depth)
+  /BuildHologramImprovements/Materials/M_HologramOpacityComposite
+      post process material that draws the captured hologram
+  /BuildHologramImprovements/Materials/M_HologramOpacityGlass
+      opaque stand-in for glass in the capture of dismantle highlights
 """
 import unreal
 
-MOD = "HologramOpacity"
+MOD = "BuildHologramImprovements"
 asset_tools = unreal.AssetToolsHelpers.get_asset_tools()
 eal = unreal.EditorAssetLibrary
 mel = unreal.MaterialEditingLibrary

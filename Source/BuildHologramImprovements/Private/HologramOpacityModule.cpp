@@ -11,4 +11,4 @@ void FHologramOpacityModule::ShutdownModule()
 {
 }
 
-IMPLEMENT_MODULE(FHologramOpacityModule, HologramOpacity);
+IMPLEMENT_MODULE(FHologramOpacityModule, BuildHologramImprovements);
