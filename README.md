@@ -24,6 +24,10 @@ Adds **Hologram Opacity** and a **Scanlines Toggle** to build mode.
 - **Satisfactory Mod Manager:** [Install from the app in one click!](https://ficsit.app/mod/54DypBRit5b39v)
 - Uninstall: delete `FactoryGame\Mods\GameFeatures\HologramOpacity`.
 
+## Known Issues
+- Build and Dismantle animations are still vanilla.
+- Objects with transparent materials like glass don't look perfect.
+
 ## How it works
 In Satisfactory 1.2 a hologram renders the building's own materials (textures, paint, decals, moving parts) and
 writes a custom depth stencil value (5 valid, 3 soft clearance, 6 invalid). The global post process
