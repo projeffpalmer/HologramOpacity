@@ -8,7 +8,7 @@ Adds **Hologram Opacity** and a **Scanlines Toggle** to build mode.
 - It keeps your **Hologram Colors** settings.
 
 ## Screenshots
-  ![A Constructor hologram at 100% (vanilla), 99%, 75%, 50%, 25% and 0% opacity](docs/screenshots/constructor-opacity-100-99-75-50-25-0.png)
+ ![A Constructor hologram at 100% (vanilla) and 60% opacity without vanilla scan lines](docs/screenshots/hologram-opacity-comparison.png)
 
  ![Location in User Interface Settings](docs/screenshots/options-show-scanlines.png)
 
