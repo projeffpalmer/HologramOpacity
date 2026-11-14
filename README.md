@@ -5,9 +5,6 @@
 Adds a working **Hologram Opacity** slider and a **Show Scanlines** checkbox to
 **Options > User Interface > Holograms/Build Mode**, so build mode holograms, and the buildings highlighted in
 dismantle mode, can be made see-through (and line-free).
-
-![A Constructor hologram at 100% (vanilla), 99%, 75%, 50%, 25% and 0% opacity](docs/screenshots/constructor-opacity-100-99-75-50-25-0.png)
-
 - **100%** with **Show Scanlines** checked (the defaults) is the normal, vanilla hologram. The mod changes nothing then.
 - **Show Scanlines** (right under the slider): unchecked removes the horizontal scan lines from build mode holograms
   at every opacity, including 100% (a clean, solid hologram in the same colour).
@@ -20,7 +17,10 @@ dismantle mode, can be made see-through (and line-free).
   fades with the slider and follows Show Scanlines, in your **Dismantle Hologram Color**, with its textures, paint
   and moving parts. Its contour stays at full strength, so you can still see what is selected at 0%.
 
-![A Constructor in dismantle mode at 100% (vanilla), 50% and 0% opacity](docs/screenshots/constructor-dismantle-100-50-0.png)
+## Screenshots
+  ![A Constructor hologram at 100% (vanilla), 99%, 75%, 50%, 25% and 0% opacity](docs/screenshots/constructor-opacity-100-99-75-50-25-0.png)
+
+ ![Location in User Interface Settings](docs/screenshots/options-show-scanlines.png)
 
 - The values are saved with your other options (`GameUserSettings.ini`: `HologramOpacity.Opacity` in
   `mFloatValues`, `HologramOpacity.Scanlines` as 0/1 in `mIntValues`).
