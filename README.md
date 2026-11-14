@@ -1,47 +1,27 @@
-# Hologram Opacity (Satisfactory mod)
+# Hologram Opacity Mod For Satisfactory
 
-<img src="docs/logo/hologram-opacity-logo.png" alt="Hologram Opacity logo" width="128" align="right">
-
-Adds a working **Hologram Opacity** slider and a **Show Scanlines** checkbox to
-**Options > User Interface > Holograms/Build Mode**, so build mode holograms, and the buildings highlighted in
-dismantle mode, can be made see-through (and line-free).
+Adds **Hologram Opacity** and a **Scanlines Toggle** to build mode.
+**Options > User Interface > Holograms/Build Mode**
 
 ![A Constructor hologram at 100% (vanilla), 99%, 75%, 50%, 25% and 0% opacity](docs/screenshots/constructor-opacity-100-99-75-50-25-0.png)
 
-- **100%** with **Show Scanlines** checked (the defaults) is the normal, vanilla hologram. The mod changes nothing then.
-- **Show Scanlines** (right under the slider): unchecked removes the horizontal scan lines from build mode holograms
-  at every opacity, including 100% (a clean, solid hologram in the same colour).
-- Lower values fade the hologram toward fully see-through (**0%**), so you can see the ground, water, foundations
-  and machines behind and under it. The hologram keeps everything the vanilla one shows: the building's textures,
-  paint, decals, materials and moving parts.
-- It uses your **Hologram Color**, **Soft Clearance Hologram Color** and **Hard Clearance (invalid) Hologram Color**
-  from the same menu section, keeps scan lines like the vanilla look, and updates instantly.
-- **Dismantle mode** works the same way: the building you aim at (and every building selected for mass dismantle)
-  fades with the slider and follows Show Scanlines, in your **Dismantle Hologram Color**, with its textures, paint
-  and moving parts. Its contour stays at full strength, so you can still see what is selected at 0%.
+- **100% Opacity** with **Show Scanlines** checked is the normal, vanilla hologram.
+- The **Show Scanlines** toggle removes the horizontal scan lines from build mode holograms at every opacity, including 100%.
+- It keeps your **Hologram Colors** settings.
 
 ![A Constructor in dismantle mode at 100% (vanilla), 50% and 0% opacity](docs/screenshots/constructor-dismantle-100-50-0.png)
 
 - The values are saved with your other options (`GameUserSettings.ini`: `HologramOpacity.Opacity` in
   `mFloatValues`, `HologramOpacity.Scanlines` as 0/1 in `mIntValues`).
-- Client-side only (`RequiredOnRemote: false`): other players and servers don't need it.
+- Client-side only (`RequiredOnRemote: false`)
 
 ## Requirements
 - Satisfactory 1.2.5 (build 517554) or newer compatible build, Windows (Steam or Epic)
 - Satisfactory Mod Loader (SML) 3.12.0 or newer 3.x
 
 ## Install
-- **Satisfactory Mod Manager:** once the mod is listed on ficsit.app, install Hologram Opacity there. SMM adds SML
-  for you.
-- **By hand:** extract `HologramOpacity-Windows.zip` (made by Alpakit, see Building) into a new folder
-  `<Satisfactory>\FactoryGame\Mods\GameFeatures\HologramOpacity\` (so `HologramOpacity.uplugin`, `Binaries` and
-  `Content` sit directly inside it). SML must already be installed. Alpakit's `HologramOpacity.zip` is the
-  multi-target zip (a `Windows\` folder inside) for uploading to ficsit.app.
-
-Uninstall: delete `FactoryGame\Mods\GameFeatures\HologramOpacity`.
-
-Note for Windows 11 with **Smart App Control** on: a self-built mod DLL has no Microsoft reputation and can be blocked,
-which makes the game refuse to load the mod. Mods published on ficsit.app are widely downloaded and pass.
+- **Satisfactory Mod Manager:** [Install from the app in one click!](https://ficsit.app/mod/54DypBRit5b39v)
+- Uninstall: delete `FactoryGame\Mods\GameFeatures\HologramOpacity`.
 
 ## How it works
 In Satisfactory 1.2 a hologram renders the building's own materials (textures, paint, decals, moving parts) and
@@ -96,21 +76,12 @@ changes a material:
 | `HoloOpacity.Param <Param> <value>` | Tune the composite material until the game restarts: EmissiveStrength, BaseIntensity, LineIntensity, LineCount, LineDuty, LineOpacityBoost, DetailGain, DetailFloor, DetailScale, ColorSaturation, DepthBias, DepthBiasScale, MaxHoloDepth, EdgeIntensity, EdgeWidth |
 | `HoloOpacity.Dump` | Log the settings, the capture, volume and render target, every hologram mesh (body, hidden) and every dismantle highlight (proxies, own meshes, shared instances, fog planes, what the mod hides and copies) to `FactoryGame.log` |
 
-## Building
-Starter project `SatisfactoryModLoader` (game headers CL517554), Unreal Engine 5.6.1-CSS, Visual Studio 2022 17.14,
-Wwise 2025.1.6 (see https://docs.ficsit.app).
-1. Build `FactoryEditor Win64 Development`.
-2. Create or update the content:
-   `UnrealEditor-Cmd.exe FactoryGame.uproject -run=pythonscript -script="Mods/GameFeatures/HologramOpacity/Scripts/create_assets.py" -unattended`
-3. Package with Alpakit, or:
-   `RunUAT.bat -ScriptsForProject=<FactoryGame.uproject> PackagePlugin -project=<FactoryGame.uproject> -DLCName=HologramOpacity -clientconfig=Shipping -serverconfig=Shipping -platform=Win64 -build -installed -nocompileeditor -merge`
-   (`-ScriptsForProject` loads Alpakit's `PackagePlugin` command; add `-CopyToGameDirectory_Windows=<Satisfactory>`
-   to install it, with the game closed).
-
 ## Credits
-- Built with Coffee Stain's modding headers, the Satisfactory Mod Loader and Alpakit (SML team), wwise-cli (Mircea
-  Roata), and the universal-modder toolkit.
-- Made with AI assistance (Claude Code), tested in the real game.
+- Coffee Stain's modding headers
+- Satisfactory Mod Loader team
+- wwise-cli
+- Universal Modder Skills
+- Made with Claude Code.
 
 ## Bugs and feedback
 Open a [GitHub issue](https://github.com/projeffpalmer/HologramOpacity/issues). Please include your game version, the
