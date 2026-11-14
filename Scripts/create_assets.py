@@ -8,6 +8,7 @@ Creates:
   /HologramOpacity/Settings/US_HologramScanlines        FGUserSetting "Show Scanlines" checkbox right under the slider
   /HologramOpacity/Materials/RT_HologramOpacityCapture  render target of the hologram capture (lit colour + depth)
   /HologramOpacity/Materials/M_HologramOpacityComposite post process material that draws the captured hologram
+  /HologramOpacity/Materials/M_HologramOpacityGlass     opaque stand-in for glass in the capture of dismantle highlights
 """
 import unreal
 
@@ -37,6 +38,7 @@ SCANLINES_MENU_PRIORITY = 6.75
 # Names shared with UHologramOpacitySubsystem
 CAPTURE_TARGET = "RT_HologramOpacityCapture"
 COMPOSITE_MATERIAL = "M_HologramOpacityComposite"
+GLASS_MATERIAL = "M_HologramOpacityGlass"
 
 
 def log(msg):
@@ -151,20 +153,47 @@ def mask(mat, x, y, src, src_output="", r=True, g=False, b=False, a=False):
     return node
 
 
+def new_material(name):
+    """A new, empty material. Built from scratch on every run: rebuilding the graph in place left the old nodes in the
+    asset."""
+    path = "/{}/Materials".format(MOD)
+    full = "{}/{}".format(path, name)
+    if unreal.load_asset("{}.{}".format(full, name)) is not None and not eal.delete_asset(full):
+        fail("could not delete " + full)
+    log("creating " + full)
+    mat = asset_tools.create_asset(name, path, unreal.Material, unreal.MaterialFactoryNew())
+    if mat is None:
+        fail("could not create " + full)
+    return mat
+
+
+def create_glass_material():
+    """Opaque, plain grey surface. The capture's copies of a highlighted building's shared instances get it in place of
+    glass: glass writes no depth, and the composite only draws captured pixels that have one, so window panes would be
+    left out of the highlight. Nothing in the main view uses it."""
+    mat = new_material(GLASS_MATERIAL)
+    # Panes are seen from both sides, on instanced (and Nanite) meshes
+    mat.set_editor_property("two_sided", True)
+    mat.set_editor_property("used_with_instanced_static_meshes", True)
+    mat.set_editor_property("used_with_nanite", True)
+    base_color = expr(mat, unreal.MaterialExpressionConstant3Vector, -400, 0, constant=unreal.LinearColor(0.3, 0.3, 0.3, 0.0))
+    roughness = expr(mat, unreal.MaterialExpressionConstant, -400, 200, r=0.6)
+    if not mel.connect_material_property(base_color, "", unreal.MaterialProperty.MP_BASE_COLOR):
+        fail("base colour connection failed")
+    if not mel.connect_material_property(roughness, "", unreal.MaterialProperty.MP_ROUGHNESS):
+        fail("roughness connection failed")
+    mel.recompile_material(mat)
+    save(mat)
+    log("glass material: %d expressions" % mel.get_num_material_expressions(mat))
+
+
 def create_composite_material(capture_target):
     """Post process: draws the captured hologram bodies (lit, with their own materials, so textures, paint, decals,
     materials and animated parts stay) in the hologram colour, with or without scan lines, and blends them over the
-    scene at the slider's opacity. Hidden where the world or a build gun helper marker (custom depth) is in front.
-    Dismantle highlights also get the game's contour (EdgeIntensity > 0)."""
-    path = "/{}/Materials".format(MOD)
-    full = "{}/{}".format(path, COMPOSITE_MATERIAL)
-    # Built from scratch on every run: rebuilding the graph in place left the old nodes in the asset
-    if unreal.load_asset("{}.{}".format(full, COMPOSITE_MATERIAL)) is not None and not eal.delete_asset(full):
-        fail("could not delete " + full)
-    log("creating " + full)
-    mat = asset_tools.create_asset(COMPOSITE_MATERIAL, path, unreal.Material, unreal.MaterialFactoryNew())
-    if mat is None:
-        fail("could not create " + full)
+    scene at the slider's opacity. Hidden where the world or a build gun helper marker (custom depth) is in front;
+    water is not in front (a hologram standing in water shows through it). Dismantle highlights also get the game's
+    contour (EdgeIntensity > 0)."""
+    mat = new_material(COMPOSITE_MATERIAL)
     mat.set_editor_property("material_domain", unreal.MaterialDomain.MD_POST_PROCESS)
     # Same place in the frame as the game's own hologram post process (PPI_OutlineHologram)
     mat.set_editor_property("blendable_location", enum_value(unreal.BlendableLocation, "BL_SCENE_COLOR_AFTER_DOF", "BL_AFTER_DOF"))
@@ -204,6 +233,11 @@ def create_composite_material(capture_target):
     scene_rgb = mask(mat, -2450, -900, scene, "Color", r=True, g=True, b=True)
     scene_depth = mask(mat, -2450, -820, expr(mat, unreal.MaterialExpressionSceneTexture, -2600, -820, scene_texture_id=scene_id.PPI_SCENE_DEPTH), "Color")
     custom_depth = mask(mat, -2450, -740, expr(mat, unreal.MaterialExpressionSceneTexture, -2600, -740, scene_texture_id=scene_id.PPI_CUSTOM_DEPTH), "Color")
+    # Water surfaces write the scene depth, which would cut a hologram standing in water off at the surface. Under water
+    # the world is what lies below the surface: the depth without water is farther there, and the scene depth (or, when
+    # that buffer is rendered smaller, close to it) everywhere else, so the farther of the two is the world
+    depth_under_water = expr(mat, unreal.MaterialExpressionSceneDepthWithoutWater, -2600, -1000)
+    world_depth = math(mat, unreal.MaterialExpressionMax, -2450, -1000, scene_depth, depth_under_water)
 
     # The captured hologram. The capture fills the top-left ViewSize pixels of its target (internal resolution)
     capture_object = expr(mat, unreal.MaterialExpressionTextureObjectParameter, -2600, -600, parameter_name="HoloCapture", texture=capture_target, sampler_type=linear_sampler)
@@ -222,7 +256,7 @@ def create_composite_material(capture_target):
     link(capture, holo_depth, "A", "A")
 
     # Visible where nothing (world or helper marker) is in front; empty capture pixels are infinitely far away
-    occluder = math(mat, unreal.MaterialExpressionMin, -2300, -800, scene_depth, custom_depth)
+    occluder = math(mat, unreal.MaterialExpressionMin, -2300, -800, world_depth, custom_depth)
     occluder_clamped = expr(mat, unreal.MaterialExpressionMin, -2150, -800, const_b=1.0e9)
     link(occluder, occluder_clamped, "A")
     gap = math(mat, unreal.MaterialExpressionSubtract, -1850, -760, occluder_clamped, holo_depth)
@@ -349,6 +383,7 @@ def main():
     create_setting()
     create_scanlines_setting()
     create_composite_material(create_capture_target())
+    create_glass_material()
     log("done")
 
 
