@@ -14,6 +14,7 @@ class UFGColoredInstanceMeshProxy;
 class UFGUserSettingApplyType;
 class UInstancedStaticMeshComponent;
 class UMaterialInstanceDynamic;
+class UMaterialInterface;
 class UMeshComponent;
 class UPrimitiveComponent;
 class UTextureRenderTarget2D;
@@ -60,15 +61,18 @@ struct FHologramOpacityHiddenInstance
  * resolution and jitter draws just those meshes, lit, into a render target (colour in RGB, depth in A). The post
  * process material M_HologramOpacityComposite draws the hologram from that target in the colour from the Holograms
  * options, with or without scan lines, and blends it over the scene at the slider's opacity, behind the world and the
- * build gun's helper markers where they are in front. Materials are never changed. At 100% with scan lines on the
- * meshes get their original flag back and the game draws the hologram itself.
+ * build gun's helper markers where they are in front (water is not in front: a hologram standing in water shows
+ * through it). Materials are never changed. At 100% with scan lines on the meshes get their original flag back, the
+ * capture is destroyed and the game draws the hologram itself.
  *
  * Dismantle mode highlights a real building the same way (custom depth stencil 8 on its own meshes, plus custom-depth-
  * only proxies of its instanced meshes, in the dismantle colour, with a contour). Below 100%, or without scan lines,
  * the building's own meshes and the proxies leave the player's view (its hidden component list, so their shadows
  * stay), its shared instances are hidden in place, and the capture draws the meshes and transient copies of those
- * instances (same mesh, materials, transform and per-instance paint data). Everything is restored when the
- * highlight ends or at 100% with scan lines on.
+ * instances (same mesh, materials, transform and per-instance paint data; glass gets an opaque stand-in material on
+ * the copies, as it writes no depth for the composite). The pooled fog planes in the building's belt openings go with
+ * it. Everything is restored when the highlight ends or at 100% with scan lines on, except the shared instances of a
+ * building dismantled meanwhile, which the game hides for its dismantle effect.
  *
  * (A capture rendered inside the main renderer would be cheaper, but in this game it trips an engine assertion in the
  * Nanite base pass, so the capture runs as its own scene renderer.)
@@ -142,7 +146,8 @@ private:
 	/** Takes the highlighted buildings out of the main view; returns what the capture draws instead */
 	void UpdateDismantle(UWorld* World, const FHologramOpacityDismantleScan& Dismantle, TArray<UPrimitiveComponent*>& OutDrawn);
 	static TArray<FHologramOpacityHiddenInstance> HideInstances(AActor* Actor);
-	static void ShowInstances(const TArray<FHologramOpacityHiddenInstance>& Instances);
+	/** Shows what HideInstances hid for Actor again (not the abstract instances of a building dismantled meanwhile) */
+	static void ShowInstances(const AActor* Actor, const TArray<FHologramOpacityHiddenInstance>& Instances);
 	/** Updates the capture's copies of the hidden instances, one instanced component per source component. With Added,
 	 *  only appends the instances of those newly highlighted actors; otherwise recreates every copy's instances. */
 	void UpdateInstanceCopies(const TArray<AActor*>* Added);
@@ -158,7 +163,12 @@ private:
 	UPROPERTY(Transient)
 	TObjectPtr<UTextureRenderTarget2D> CaptureTarget = nullptr;
 
-	/** Spawned (transient, never saved) in the current game world */
+	/** Opaque material the capture's instance copies get in place of glass, which writes no depth (null if missing) */
+	UPROPERTY(Transient)
+	TObjectPtr<UMaterialInterface> GlassMaterial = nullptr;
+
+	/** Spawned (transient, never saved) in the current game world. The capture is destroyed again when the game draws
+	 *  holograms itself (100% with scan lines on); the volume stays, switched off. */
 	TWeakObjectPtr<ASceneCapture2D> Capture;
 	TWeakObjectPtr<APostProcessVolume> Volume;
 

@@ -20,10 +20,14 @@
 #include "Buildables/FGBuildable.h"
 #include "Components/InstancedStaticMeshComponent.h"
 #include "Components/StaticMeshComponent.h"
+#include "Engine/BlueprintGeneratedClass.h"
+#include "Engine/SCS_Node.h"
+#include "Engine/SimpleConstructionScript.h"
 #include "Engine/StaticMesh.h"
 #include "FGBackgroundThread.h"
 #include "FGColoredInstanceManager.h"
 #include "FGColoredInstanceMeshProxy.h"
+#include "FGDecorationTemplate.h"
 #include "FGGameUserSettings.h"
 #include "FGOutlineComponent.h"
 #include "GameFramework/PlayerController.h"
@@ -39,6 +43,8 @@ namespace HologramOpacity
 	static const TCHAR* CompositeMaterialPath = TEXT("/HologramOpacity/Materials/M_HologramOpacityComposite.M_HologramOpacityComposite");
 	// The captured hologram (lit colour in RGB, depth in A), read by the composite material (this mod's content)
 	static const TCHAR* CaptureTargetPath = TEXT("/HologramOpacity/Materials/RT_HologramOpacityCapture.RT_HologramOpacityCapture");
+	// Opaque stand-in for glass on the capture's copies of shared instances (this mod's content)
+	static const TCHAR* GlassMaterialPath = TEXT("/HologramOpacity/Materials/M_HologramOpacityGlass.M_HologramOpacityGlass");
 	// Materials of the build gun's helper meshes (guidelines, clearance boxes, arrows, connection markers)
 	static const TCHAR* BuildGunMaterialFolder = TEXT("/Game/FactoryGame/Equipment/BuildGun/");
 	// Custom depth stencil values the game writes on hologram bodies (PPI_OutlineHologram bitmask values)
@@ -51,8 +57,8 @@ namespace HologramOpacity
 	static constexpr int32 DismantleStateIndex = 3;
 	// Contour brightness of dismantle highlights (the game's contour is a brighter dismantle colour)
 	static constexpr float DismantleEdgeIntensity = 1.5f;
-	// How far (cm) a pooled fog plane may be from where its building says it is (seen up to 19 cm on a Constructor,
-	// whose openings are metres apart)
+	// How far (cm) a pooled fog plane may be from where its building says it is (seen up to 19 cm from a Constructor's
+	// sparse data; its openings are metres apart)
 	static constexpr float FogPlaneTolerance = 50.f;
 	// Scale of a hidden instance, like FInstanceOwnershipHandle::HideInstance
 	static constexpr float HiddenScale = 0.001f;
@@ -152,8 +158,10 @@ namespace HologramOpacity
 		return Property && Manager ? Cast<UInstancedStaticMeshComponent>(Property->GetObjectPropertyValue_InContainer(Manager)) : nullptr;
 	}
 
-	/** An instanced component that draws like Source (mesh, materials, per-instance data), for the capture only */
-	static UInstancedStaticMeshComponent* CreateInstanceCopy(const UInstancedStaticMeshComponent* Source, AActor* Owner)
+	/** An instanced component that draws like Source (mesh, materials, per-instance data), for the capture only.
+	 *  Glass (translucent blend mode) writes no depth, and the composite only draws captured pixels that have one: those
+	 *  slots get the opaque GlassStandIn, if there is one, so window panes show in the highlight. */
+	static UInstancedStaticMeshComponent* CreateInstanceCopy(const UInstancedStaticMeshComponent* Source, AActor* Owner, UMaterialInterface* GlassStandIn)
 	{
 		UInstancedStaticMeshComponent* Copy = NewObject<UInstancedStaticMeshComponent>(Owner, NAME_None, RF_Transient);
 		Copy->SetMobility(EComponentMobility::Movable);
@@ -163,7 +171,9 @@ namespace HologramOpacity
 		Copy->SetStaticMesh(Source->GetStaticMesh());
 		for (int32 Slot = 0; Slot < Source->GetNumMaterials(); ++Slot)
 		{
-			Copy->SetMaterial(Slot, Source->GetMaterial(Slot));
+			UMaterialInterface* Material = Source->GetMaterial(Slot);
+			const bool bGlass = Material && Material->GetBlendMode() == BLEND_Translucent;
+			Copy->SetMaterial(Slot, bGlass && GlassStandIn ? GlassStandIn : Material);
 		}
 		Copy->SetNumCustomDataFloats(Source->NumCustomDataFloats);
 		Copy->CastShadow = Source->CastShadow;
@@ -176,6 +186,64 @@ namespace HologramOpacity
 		Copy->WorldPositionOffsetDisableDistance = Source->WorldPositionOffsetDisableDistance;
 		Copy->RegisterComponent();
 		return Copy;
+	}
+
+	/** Where the game's pool draws a mesh for a building (the black fog planes in its belt openings) */
+	struct FPooledMeshSlot
+	{
+		FVector Location;
+		const UStaticMesh* Mesh;
+	};
+
+	/** The mesh the pool draws for a decorator's proxy component: its pool type's, else the component's own */
+	static const UStaticMesh* PooledMesh(const UFGPoolableProxyComponentBase* Proxy)
+	{
+		// The pool types are project settings: read once
+		static const TArray<FFGPoolType> PoolTypes = UFGPoolSettings::GetPoolTypes();
+		for (const FFGPoolType& Type : PoolTypes)
+		{
+			if (Type.mProxyComponent.Get() == Proxy->GetClass())
+			{
+				if (const UStaticMesh* Mesh = Type.mVisual_Mesh.Get())
+				{
+					return Mesh;
+				}
+			}
+		}
+		return Proxy->GetStaticMesh();
+	}
+
+	/** Adds a building's pooled mesh slots. The pool places its meshes from the building's decorator blueprint, one
+	 *  proxy component per mesh, relative to the building. A few buildings (the Constructor) list their fog planes in
+	 *  their sparse data as well, some centimetres off. */
+	static void AddPooledMeshSlots(const AFGBuildable* Buildable, TArray<FPooledMeshSlot>& Out)
+	{
+		const FTransform ActorTransform = Buildable->GetActorTransform();
+		if (const UFGBuildableSparseDataObject* SparseData = Buildable->GetBuildableSparseData(); SparseData && SparseData->FogPlaneMesh)
+		{
+			for (const FTransform& Relative : SparseData->mFogPlaneLocations)
+			{
+				Out.Add({(Relative * ActorTransform).GetLocation(), SparseData->FogPlaneMesh});
+			}
+		}
+		for (const UClass* Class = Buildable->GetDecorationTemplate(); Class; Class = Class->GetSuperClass())
+		{
+			const UBlueprintGeneratedClass* Blueprint = Cast<UBlueprintGeneratedClass>(Class);
+			const USimpleConstructionScript* Script = Blueprint ? Blueprint->SimpleConstructionScript.Get() : nullptr;
+			if (!Script)
+			{
+				continue;
+			}
+			for (const USCS_Node* Node : Script->GetAllNodes())
+			{
+				const UFGPoolableProxyComponentBase* Proxy = Node ? Cast<UFGPoolableProxyComponentBase>(Node->ComponentTemplate) : nullptr;
+				const UStaticMesh* Mesh = Proxy ? PooledMesh(Proxy) : nullptr;
+				if (Mesh)
+				{
+					Out.Add({(Proxy->GetRelativeTransform() * ActorTransform).GetLocation(), Mesh});
+				}
+			}
+		}
 	}
 
 	/** One of the outline component's reflected (UPROPERTY) arrays of FActorOutlineState, or null if its layout differs */
@@ -244,12 +312,14 @@ namespace HologramOpacity
 		{
 			return;
 		}
-		if (const UFGBuildableSparseDataObject* SparseData = Buildable ? Buildable->GetBuildableSparseData() : nullptr)
+		if (Buildable)
 		{
-			for (const FTransform& Relative : SparseData->mFogPlaneLocations)
+			TArray<FPooledMeshSlot> Slots;
+			AddPooledMeshSlots(Buildable, Slots);
+			UE_LOG(LogHologramOpacity, Display, TEXT("      decorator %s"), *Describe(Buildable->GetDecorationTemplate().Get()));
+			for (const FPooledMeshSlot& Slot : Slots)
 			{
-				UE_LOG(LogHologramOpacity, Display, TEXT("      fog plane %s at %s"), *Describe(SparseData->FogPlaneMesh),
-					*(Relative * Actor->GetActorTransform()).GetLocation().ToCompactString());
+				UE_LOG(LogHologramOpacity, Display, TEXT("      fog plane %s at %s"), *Describe(Slot.Mesh), *Slot.Location.ToCompactString());
 			}
 		}
 		TInlineComponentArray<UPrimitiveComponent*> Primitives(Actor);
@@ -545,6 +615,12 @@ bool UHologramOpacitySubsystem::EnsureComposite(UWorld* World)
 			return false;
 		}
 		CompositeMaterial = UMaterialInstanceDynamic::Create(Material, this, TEXT("MID_HologramOpacityComposite"));
+		// Not required: without it glass keeps its own material and stays out of dismantle highlights
+		GlassMaterial = LoadObject<UMaterialInterface>(nullptr, HologramOpacity::GlassMaterialPath);
+		if (!GlassMaterial)
+		{
+			UE_LOG(LogHologramOpacity, Warning, TEXT("Could not load %s; glass is left out of dismantle highlights"), HologramOpacity::GlassMaterialPath);
+		}
 		ReadColors();
 		bParametersDirty = true;
 	}
@@ -736,32 +812,24 @@ void UHologramOpacitySubsystem::ScanDismantle(UWorld* World, FHologramOpacityDis
 		}
 	}
 
-	// The black fog planes inside the buildings' openings are pooled meshes of the pool root, placed at the building's
-	// fog plane transforms: they go with the building
-	struct FFogPlane
-	{
-		FVector Location;
-		const UStaticMesh* Mesh;
-	};
-	TArray<FFogPlane> FogPlanes;
-	TSet<const UStaticMesh*> FogPlaneMeshes;
+	// The black fog planes inside the buildings' belt openings are pooled meshes of the pool root, not components of the
+	// building: they go with the building
+	TArray<HologramOpacity::FPooledMeshSlot> FogPlanes;
 	for (const AActor* Actor : Out.Actors)
 	{
-		const AFGBuildable* Buildable = Cast<AFGBuildable>(Actor);
-		const UFGBuildableSparseDataObject* SparseData = Buildable ? Buildable->GetBuildableSparseData() : nullptr;
-		if (!SparseData || !SparseData->FogPlaneMesh)
+		if (const AFGBuildable* Buildable = Cast<AFGBuildable>(Actor))
 		{
-			continue;
-		}
-		FogPlaneMeshes.Add(SparseData->FogPlaneMesh);
-		for (const FTransform& Relative : SparseData->mFogPlaneLocations)
-		{
-			FogPlanes.Add({(Relative * Actor->GetActorTransform()).GetLocation(), SparseData->FogPlaneMesh});
+			HologramOpacity::AddPooledMeshSlots(Buildable, FogPlanes);
 		}
 	}
 	if (FogPlanes.Num() == 0)
 	{
 		return;
+	}
+	TSet<const UStaticMesh*> FogPlaneMeshes;
+	for (const HologramOpacity::FPooledMeshSlot& FogPlane : FogPlanes)
+	{
+		FogPlaneMeshes.Add(FogPlane.Mesh);
 	}
 	// Only pooled meshes of a fog plane mesh: other pooled meshes (lights, signs) can sit just as close
 	TArray<UStaticMeshComponent*> Pooled;
@@ -777,7 +845,7 @@ void UHologramOpacitySubsystem::ScanDismantle(UWorld* World, FHologramOpacityDis
 		}
 	}
 	// Each fog plane is the nearest pooled mesh of its mesh, if one is close enough
-	for (const FFogPlane& FogPlane : FogPlanes)
+	for (const HologramOpacity::FPooledMeshSlot& FogPlane : FogPlanes)
 	{
 		UStaticMeshComponent* Nearest = nullptr;
 		double NearestDistance = FMath::Square(HologramOpacity::FogPlaneTolerance);
@@ -806,7 +874,7 @@ void UHologramOpacitySubsystem::UpdateDismantle(UWorld* World, const FHologramOp
 	{
 		if (!Highlighted.Contains(It.Key().Get()))
 		{
-			ShowInstances(It.Value());
+			ShowInstances(It.Key().Get(), It.Value());
 			It.RemoveCurrent();
 			bRemoved = true;
 		}
@@ -927,15 +995,22 @@ TArray<FHologramOpacityHiddenInstance> UHologramOpacitySubsystem::HideInstances(
 	return Hidden;
 }
 
-void UHologramOpacitySubsystem::ShowInstances(const TArray<FHologramOpacityHiddenInstance>& Instances)
+void UHologramOpacitySubsystem::ShowInstances(const AActor* Actor, const TArray<FHologramOpacityHiddenInstance>& Instances)
 {
+	// A building dismantled while it was highlighted keeps its abstract instances hidden: the game hides them for the
+	// dismantle effect (a hide that did nothing, as this mod had hidden them already) and removes them when it ends
+	const AFGBuildable* Buildable = Cast<AFGBuildable>(Actor);
+	const bool bDismantled = Buildable && Buildable->GetIsDismantled();
 	for (const FHologramOpacityHiddenInstance& Entry : Instances)
 	{
 		if (Entry.Handle.IsValid())
 		{
 			// Does nothing once the instance is removed or shown again. (The handle has no record of who hid it, so an
 			// instance the game hid as well while it was highlighted is shown too; leaving one hidden for good is worse.)
-			Entry.Handle->UnHideInstance(true);
+			if (!bDismantled)
+			{
+				Entry.Handle->UnHideInstance(true);
+			}
 		}
 		else if (const UFGColoredInstanceMeshProxy* Mesh = Entry.ColoredMesh.Get())
 		{
@@ -1057,7 +1132,7 @@ void UHologramOpacitySubsystem::UpdateInstanceCopies(const TArray<AActor*>* Adde
 		if (!Copy)
 		{
 			// Kept alive by its owner, the capture actor
-			Copy = HologramOpacity::CreateInstanceCopy(Pair.Key, Owner);
+			Copy = HologramOpacity::CreateInstanceCopy(Pair.Key, Owner, GlassMaterial);
 			InstanceCopies.Add(Pair.Key, Copy);
 		}
 		else if (!Added)
@@ -1116,7 +1191,7 @@ void UHologramOpacitySubsystem::StopDismantle()
 {
 	for (const TPair<TWeakObjectPtr<AActor>, TArray<FHologramOpacityHiddenInstance>>& Pair : DismantleActors)
 	{
-		ShowInstances(Pair.Value);
+		ShowInstances(Pair.Key.Get(), Pair.Value);
 	}
 	DismantleActors.Reset();
 	for (const TPair<TWeakObjectPtr<UPrimitiveComponent>, bool>& Pair : ShadowFlags)
@@ -1155,10 +1230,18 @@ void UHologramOpacitySubsystem::StopComposite()
 	}
 	HiddenMeshes.Reset();
 	StopDismantle();
+	// The capture actor goes, with its view state, and the render target shrinks from the main view's resolution back to
+	// its own size, so nothing of that stays allocated while the game draws holograms itself. EnsureComposite spawns a
+	// new capture the next time one is needed.
 	if (ASceneCapture2D* SceneCapture = Capture.Get())
 	{
-		SceneCapture->GetCaptureComponent2D()->ShowOnlyComponents.Reset();
+		SceneCapture->Destroy();
+		if (CaptureTarget)
+		{
+			CaptureTarget->UpdateResource();
+		}
 	}
+	Capture.Reset();
 	SetCompositeEnabled(false);
 }
 
@@ -1225,7 +1308,7 @@ void UHologramOpacitySubsystem::Tick(float DeltaTime)
 
 	if (!WantsComposite())
 	{
-		if (bCompositeEnabled || HiddenMeshes.Num() > 0 || HasDismantleState())
+		if (bCompositeEnabled || HiddenMeshes.Num() > 0 || HasDismantleState() || Capture.IsValid())
 		{
 			StopComposite();
 		}
