@@ -1,7 +1,7 @@
 # Hologram Opacity Mod For Satisfactory
 
-Adds **Hologram Opacity** and a **Scanlines Toggle** to build mode.
-**Options > User Interface > Holograms/Build Mode**
+### Adds **Hologram Opacity** and **Scanlines** settings for build mode.
+Find the settings in **Options > User Interface > Holograms/Build Mode**
 
 - **100% Opacity** with **Show Scanlines** checked is the normal, vanilla hologram.
 - The **Show Scanlines** toggle removes the horizontal scan lines from build mode holograms at every opacity, including 100%.
