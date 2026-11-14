@@ -6,15 +6,14 @@ Adds **Hologram Opacity** and a **Scanlines Toggle** to build mode.
 - **100% Opacity** with **Show Scanlines** checked is the normal, vanilla hologram.
 - The **Show Scanlines** toggle removes the horizontal scan lines from build mode holograms at every opacity, including 100%.
 - It keeps your **Hologram Colors** settings.
+- The values are saved with your other options (`GameUserSettings.ini`: `HologramOpacity.Opacity` in
+  `mFloatValues`, `HologramOpacity.Scanlines` as 0/1 in `mIntValues`).
+- Client-side only (`RequiredOnRemote: false`)
 
 ## Screenshots
  ![A Constructor hologram at 100% (vanilla) and 60% opacity without vanilla scan lines](docs/screenshots/hologram-opacity-comparison.png)
 
  ![Location in User Interface Settings](docs/screenshots/options-show-scanlines.png)
-
-- The values are saved with your other options (`GameUserSettings.ini`: `HologramOpacity.Opacity` in
-  `mFloatValues`, `HologramOpacity.Scanlines` as 0/1 in `mIntValues`).
-- Client-side only (`RequiredOnRemote: false`)
 
 ## Requirements
 - Satisfactory 1.2.5 (build 517554) or newer compatible build, Windows (Steam or Epic)
