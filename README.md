@@ -26,6 +26,7 @@ Find the settings in **Options > User Interface > Holograms/Build Mode**
 ## Known Issues
 - Build and Dismantle animations are still vanilla.
 - Objects with transparent materials like glass don't look perfect.
+- Vehicle paths don't use the opacity and scanlines settings.
 
 ## How it works
 In Satisfactory 1.2 a hologram renders the building's own materials (textures, paint, decals, moving parts) and
