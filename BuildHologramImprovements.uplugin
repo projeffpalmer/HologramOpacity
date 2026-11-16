@@ -1,8 +1,8 @@
 {
 	"FileVersion": 3,
 	"Version": 1,
-	"VersionName": "1.3.0",
-	"SemVersion": "1.3.0",
+	"VersionName": "1.3.1",
+	"SemVersion": "1.3.1",
 	"GameVersion": ">=517554",
 	"FriendlyName": "Hologram Opacity",
 	"Description": "Adds a working Hologram Opacity slider and a Show Scanlines checkbox to Options > User Interface > Holograms/Build Mode, so build mode holograms and dismantle highlights can be made see-through and line-free.",

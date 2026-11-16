@@ -32,7 +32,10 @@
 #include "FGOutlineComponent.h"
 #include "GameFramework/PlayerController.h"
 #include "Hologram/FGHologram.h"
+#include "Hologram/FGVehiclePathSegmentHologram.h"
 #include "Settings/FGUserSettingApplyType.h"
+#include "WheeledVehicles/FGVehiclePathNode.h"
+#include "WheeledVehicles/FGVehiclePathSegment.h"
 
 const TCHAR* UHologramOpacitySubsystem::SettingId = TEXT("HologramOpacity.Opacity");
 const TCHAR* UHologramOpacitySubsystem::ScanlinesSettingId = TEXT("HologramOpacity.Scanlines");
@@ -45,8 +48,31 @@ namespace HologramOpacity
 	static const TCHAR* CaptureTargetPath = TEXT("/BuildHologramImprovements/Materials/RT_HologramOpacityCapture.RT_HologramOpacityCapture");
 	// Opaque stand-in for glass on the capture's copies of shared instances (this mod's content)
 	static const TCHAR* GlassMaterialPath = TEXT("/BuildHologramImprovements/Materials/M_HologramOpacityGlass.M_HologramOpacityGlass");
+	// Draws nothing: on the icon of a vehicle path highlighted for dismantle (this mod's content)
+	static const TCHAR* HiddenMaterialPath = TEXT("/BuildHologramImprovements/Materials/M_HologramOpacityHidden.M_HologramOpacityHidden");
 	// Materials of the build gun's helper meshes (guidelines, clearance boxes, arrows, connection markers)
 	static const TCHAR* BuildGunMaterialFolder = TEXT("/Game/FactoryGame/Equipment/BuildGun/");
+	// Meshes and materials of vehicle paths (path lines, arrows, halos, guides), in holograms and on built paths. They
+	// are see-through markers (translucent, so without depth in the capture) that the game draws itself: never hologram
+	// bodies or captured meshes. The opacity and scan line settings don't apply to them.
+	static const TCHAR* VehiclePathFolder = TEXT("/Game/FactoryGame/Buildable/Vehicle/VehiclePath/");
+	// Custom primitive data index the game sets to 1 on the meshes of a path highlighted for dismantle: the material's
+	// "Dismantle" parameter, which makes the path a plain grey band for the game's post process to colour. At 0 the
+	// material draws the path as usual, as it does in the path's build hologram (and then writes no custom depth, so
+	// the post process colours nothing).
+	static constexpr int32 PathDismantleDataIndex = 4;
+	// Custom primitive data index of the material's "Is Legacy Path", set by the game on paths converted from old saves:
+	// it draws the path in the colour of the vector parameter below instead of the Vehicle Paths option colours
+	static constexpr int32 PathLegacyDataIndex = 0x12;
+	static const FName PathColorParameter(TEXT("Legacy Path Color"));
+	// In the names of the materials of a path's vehicle icon (MI_Vehicle_Visualization_Hologram_Icon_Truck, ...). For a
+	// legacy path the material alternates the icon with a question mark, about once a second.
+	static const TCHAR* PathIconMaterialName = TEXT("Visualization_Hologram_Icon");
+	// The arrow material of the paths of most vehicle types, which leaves gaps in the row of arrows where the vehicle
+	// icons are, and the truck path's, which doesn't (seen in game; same scalar and vector values otherwise). With the
+	// icon hidden, the first is drawn as the second.
+	static const FName PathArrowMaterialName(TEXT("MI_Vehicle_Visualization_Hologram_Arrow"));
+	static const TCHAR* PathFilledArrowMaterialPath = TEXT("/Game/FactoryGame/Buildable/Vehicle/VehiclePath/Materials/MI_Vehicle_Visualization_Hologram_Arrow_Truck.MI_Vehicle_Visualization_Hologram_Arrow_Truck");
 	// Custom depth stencil values the game writes on hologram bodies (PPI_OutlineHologram bitmask values)
 	static constexpr int32 StencilSoftClearance = 3;
 	static constexpr int32 StencilValid = 5;
@@ -90,6 +116,52 @@ namespace HologramOpacity
 		return Package.ToView().StartsWith(BuildGunMaterialFolder);
 	}
 
+	static bool IsInVehiclePathFolder(const UObject* Asset)
+	{
+		const FNameBuilder Package(Asset->GetOutermost()->GetFName());
+		return Package.ToView().StartsWith(VehiclePathFolder);
+	}
+
+	/** True for a mesh that draws a vehicle path: its static mesh or one of its materials is a vehicle path asset.
+	 *  (Seen in holograms other than the path's own too: blueprints with paths, docking stations.) */
+	static bool IsVehiclePathMesh(const UPrimitiveComponent* Primitive)
+	{
+		if (const UStaticMeshComponent* StaticMesh = Cast<UStaticMeshComponent>(Primitive))
+		{
+			if (const UStaticMesh* Mesh = StaticMesh->GetStaticMesh(); Mesh && IsInVehiclePathFolder(Mesh))
+			{
+				return true;
+			}
+		}
+		for (int32 Index = 0; Index < Primitive->GetNumMaterials(); ++Index)
+		{
+			// A dynamic instance is in the transient package: go by the asset it was made from
+			const UMaterialInterface* Material = Primitive->GetMaterial(Index);
+			while (const UMaterialInstanceDynamic* Dynamic = Cast<UMaterialInstanceDynamic>(Material))
+			{
+				Material = Dynamic->Parent;
+			}
+			if (Material && IsInVehiclePathFolder(Material))
+			{
+				return true;
+			}
+		}
+		return false;
+	}
+
+	/** True for the material of a vehicle path's vehicle icon */
+	static bool IsPathIconMaterial(const UMaterialInterface* Material)
+	{
+		const FNameBuilder Name(Material->GetFName());
+		return Name.ToView().Contains(PathIconMaterialName);
+	}
+
+	/** True for a built vehicle path (segment or node) */
+	static bool IsVehiclePathActor(const AActor* Actor)
+	{
+		return Actor->IsA<AFGVehiclePathSegment>() || Actor->IsA<AFGVehiclePathNode>();
+	}
+
 	static FString Describe(const UObject* Object)
 	{
 		return Object ? Object->GetPathName() : FString(TEXT("None"));
@@ -99,6 +171,9 @@ namespace HologramOpacity
 	static const TCHAR* const SetUsage = TEXT("HoloOpacity.Set <0..1 | -1>  Override the hologram opacity for testing. -1 goes back to the Options value.");
 	static const TCHAR* const ScanlinesUsage = TEXT("HoloOpacity.Scanlines <1 | 0 | -1>  Override Show Scanlines for testing (1 on, 0 off). -1 goes back to the Options value.");
 	static const TCHAR* const ParamUsage = TEXT("HoloOpacity.Param <parameter> <value>  Tune a scalar parameter of the composite material until the game restarts.");
+
+	static const TCHAR* const PathParamUsage = TEXT("HoloOpacity.PathParam <parameter> <value | r g b>  Tune a scalar or colour parameter of the materials of vehicle paths highlighted for dismantle, until the game restarts. Write spaces in the name as underscores.");
+	static const TCHAR* const PathDataUsage = TEXT("HoloOpacity.PathData <index> <value>  Tune a custom primitive data value on the meshes of vehicle paths highlighted for dismantle, until the game restarts.");
 
 	static void LogUsage(const TCHAR* Usage)
 	{
@@ -292,6 +367,67 @@ namespace HologramOpacity
 			Primitive->bRenderCustomDepth ? 1 : 0, Primitive->CustomDepthStencilValue, Primitive->GetNumMaterials(), Material ? *Material->GetPathName() : TEXT("None"));
 	}
 
+	/** Vehicle path materials DumpPathMesh has logged the parameters of in this dump */
+	static TSet<const UMaterialInterface*> GDumpedPathMaterials;
+
+	/** For a vehicle path mesh: its custom primitive data and materials, and once per material every scalar and vector
+	 *  parameter with its value and custom primitive data index */
+	static void DumpPathMesh(const UPrimitiveComponent* Primitive)
+	{
+		if (!IsVehiclePathMesh(Primitive))
+		{
+			return;
+		}
+		FString DataText;
+		for (const float Value : Primitive->GetCustomPrimitiveData().Data)
+		{
+			DataText += FString::Printf(TEXT(" %.2f"), Value);
+		}
+		UE_LOG(LogHologramOpacity, Display, TEXT("        path data [%s ]"), *DataText);
+		for (int32 Slot = 0; Slot < Primitive->GetNumMaterials(); ++Slot)
+		{
+			const UMaterialInterface* Material = Primitive->GetMaterial(Slot);
+			UE_LOG(LogHologramOpacity, Display, TEXT("        path slot %d %s blend %d"), Slot, *Describe(Material), Material ? static_cast<int32>(Material->GetBlendMode()) : -1);
+			bool bAlreadyDumped = false;
+			GDumpedPathMaterials.Add(Material, &bAlreadyDumped);
+			if (!Material || bAlreadyDumped)
+			{
+				continue;
+			}
+			for (const EMaterialParameterType Type : {EMaterialParameterType::Scalar, EMaterialParameterType::Vector, EMaterialParameterType::Texture, EMaterialParameterType::StaticSwitch})
+			{
+				TArray<FMaterialParameterInfo> Infos;
+				TArray<FGuid> Ids;
+				Material->GetAllParameterInfoOfType(Type, Infos, Ids);
+				for (const FMaterialParameterInfo& Info : Infos)
+				{
+					FMaterialParameterMetadata Meta;
+					if (!Material->GetParameterValue(Type, Info, Meta) || Meta.Value.Type != Type)
+					{
+						continue;
+					}
+					FString ValueText;
+					switch (Type)
+					{
+					case EMaterialParameterType::Scalar:
+						ValueText = FString::Printf(TEXT("%.4f"), Meta.Value.AsScalar());
+						break;
+					case EMaterialParameterType::Vector:
+						ValueText = Meta.Value.AsLinearColor().ToString();
+						break;
+					case EMaterialParameterType::Texture:
+						ValueText = Describe(Meta.Value.AsTextureObject());
+						break;
+					default:
+						ValueText = Meta.Value.AsStaticSwitch() ? TEXT("switch on") : TEXT("switch off");
+						break;
+					}
+					UE_LOG(LogHologramOpacity, Display, TEXT("          param '%s' = %s (primitive data %d)"), *Info.Name.ToString(), *ValueText, Meta.PrimitiveDataIndex);
+				}
+			}
+		}
+	}
+
 	/** One outlined actor: its proxies, its own primitives and its abstract (shared, instanced) meshes */
 	static void DumpOutlineState(const FActorOutlineState& State)
 	{
@@ -326,6 +462,7 @@ namespace HologramOpacity
 		for (const UPrimitiveComponent* Primitive : Primitives)
 		{
 			DumpPrimitive(TEXT("own"), NAME_None, Primitive);
+			DumpPathMesh(Primitive);
 			if (const UFGColoredInstanceMeshProxy* Colored = Cast<UFGColoredInstanceMeshProxy>(Primitive); Colored && Colored->mInstanceHandle.IsInstanced())
 			{
 				const UInstancedStaticMeshComponent* Source = ColoredInstanceComponent(Colored);
@@ -421,6 +558,48 @@ static FAutoConsoleCommand GHoloOpacityParamCmd(
 		}
 	}));
 
+static FAutoConsoleCommand GHoloOpacityPathParamCmd(
+	TEXT("HoloOpacity.PathParam"),
+	HologramOpacity::PathParamUsage,
+	FConsoleCommandWithArgsDelegate::CreateLambda([](const TArray<FString>& Args)
+	{
+		TArray<float> Values;
+		for (int32 Index = 1; Index < Args.Num(); ++Index)
+		{
+			if (!HologramOpacity::ParseArgument(Args, Index, Values.AddDefaulted_GetRef(), HologramOpacity::PathParamUsage))
+			{
+				return;
+			}
+		}
+		if (Values.Num() != 1 && Values.Num() != 3)
+		{
+			HologramOpacity::LogUsage(HologramOpacity::PathParamUsage);
+			return;
+		}
+		if (UHologramOpacitySubsystem* Subsystem = HologramOpacity::CommandTarget())
+		{
+			// Parameter names have spaces, console arguments don't
+			Subsystem->SetPathParameter(FName(*Args[0].Replace(TEXT("_"), TEXT(" "))), Values);
+		}
+	}));
+
+static FAutoConsoleCommand GHoloOpacityPathDataCmd(
+	TEXT("HoloOpacity.PathData"),
+	HologramOpacity::PathDataUsage,
+	FConsoleCommandWithArgsDelegate::CreateLambda([](const TArray<FString>& Args)
+	{
+		int32 Index = 0;
+		float Value = 0.f;
+		if (!HologramOpacity::ParseArgument(Args, 0, Index, HologramOpacity::PathDataUsage) || !HologramOpacity::ParseArgument(Args, 1, Value, HologramOpacity::PathDataUsage))
+		{
+			return;
+		}
+		if (UHologramOpacitySubsystem* Subsystem = HologramOpacity::CommandTarget())
+		{
+			Subsystem->SetPathData(Index, Value);
+		}
+	}));
+
 static FAutoConsoleCommand GHoloOpacityDumpCmd(
 	TEXT("HoloOpacity.Dump"),
 	TEXT("HoloOpacity.Dump  Log the settings, the composite, every hologram mesh and every dismantle highlight."),
@@ -452,6 +631,7 @@ void UHologramOpacitySubsystem::Initialize(FSubsystemCollectionBase& Collection)
 
 void UHologramOpacitySubsystem::Deinitialize()
 {
+	StopVehiclePaths();
 	StopComposite();
 	bInitialized = false;
 	if (HologramOpacity::GActive.Get() == this)
@@ -583,6 +763,10 @@ bool UHologramOpacitySubsystem::IsHologramBodyMesh(const UMeshComponent* Mesh)
 	}
 	const int32 Stencil = Mesh->CustomDepthStencilValue;
 	if (Stencil != HologramOpacity::StencilValid && Stencil != HologramOpacity::StencilSoftClearance && Stencil != HologramOpacity::StencilInvalid)
+	{
+		return false;
+	}
+	if (HologramOpacity::IsVehiclePathMesh(Mesh))
 	{
 		return false;
 	}
@@ -775,17 +959,19 @@ void UHologramOpacitySubsystem::ScanDismantle(UWorld* World, FHologramOpacityDis
 		for (UPrimitiveComponent* Primitive : Primitives)
 		{
 			if (Primitive->IsRegistered() && Primitive->IsVisible() && Primitive->bRenderInMainPass && Primitive->bRenderCustomDepth
-				&& Primitive->CustomDepthStencilValue == HologramOpacity::StencilDismantle)
+				&& Primitive->CustomDepthStencilValue == HologramOpacity::StencilDismantle && !HologramOpacity::IsVehiclePathMesh(Primitive))
 			{
 				Out.Meshes.Add(Primitive);
 			}
 		}
 	};
-	// Highlights of the proxies alone stay as the game draws them (which real meshes they stand for is unknown)
+	// Highlights of the proxies alone stay as the game draws them (which real meshes they stand for is unknown), and so
+	// do vehicle paths (UpdateVehiclePaths recolours them in place)
 	auto DismantleActor = [](const FActorOutlineState& State) -> AActor*
 	{
 		AActor* Actor = State.Actor;
-		return State.OutlineColor == EOutlineColor::OC_DISMANTLE && IsValid(Actor) && !State.OnlyHighlightProxies ? Actor : nullptr;
+		return State.OutlineColor == EOutlineColor::OC_DISMANTLE && IsValid(Actor) && !State.OnlyHighlightProxies
+			&& !HologramOpacity::IsVehiclePathActor(Actor) ? Actor : nullptr;
 	};
 
 	// Whole actors: their meshes, and below their shared instances and fog planes
@@ -1187,6 +1373,270 @@ void UHologramOpacitySubsystem::SetMainViewHidden(UWorld* World, const TArray<UP
 	}
 }
 
+// ---------------------------------------------------------------------------------------------------------------------
+// Vehicle paths highlighted for dismantle
+// ---------------------------------------------------------------------------------------------------------------------
+
+void UHologramOpacitySubsystem::UpdateVehiclePaths(const UWorld* World)
+{
+	// The path meshes of the vehicle paths (segments and nodes) highlighted for dismantle
+	TArray<UMeshComponent*> Highlighted;
+	if (const UFGOutlineComponent* Outline = UFGOutlineComponent::Get(World))
+	{
+		TSet<const AActor*> Scanned;
+		auto Collect = [&Highlighted, &Scanned](const TArray<FActorOutlineState>* States)
+		{
+			if (!States)
+			{
+				return;
+			}
+			for (const FActorOutlineState& State : *States)
+			{
+				const AActor* Actor = State.Actor;
+				if (State.OutlineColor != EOutlineColor::OC_DISMANTLE || !IsValid(Actor) || !HologramOpacity::IsVehiclePathActor(Actor))
+				{
+					continue;
+				}
+				bool bAlreadyScanned = false;
+				Scanned.Add(Actor, &bAlreadyScanned);
+				if (bAlreadyScanned)
+				{
+					continue;
+				}
+				TInlineComponentArray<UMeshComponent*> Meshes(Actor);
+				for (UMeshComponent* Mesh : Meshes)
+				{
+					if (Mesh->IsRegistered() && HologramOpacity::IsVehiclePathMesh(Mesh))
+					{
+						Highlighted.Add(Mesh);
+					}
+				}
+			}
+		};
+		Collect(HologramOpacity::ActorOutlineStates(Outline));
+		Collect(HologramOpacity::ComponentOutlineStates(Outline));
+	}
+	if (Highlighted.Num() == 0 && RecolouredPathMeshes.Num() == 0)
+	{
+		return;
+	}
+
+	// Not required: without it the icon stays, alternating with the legacy mode's question mark
+	if (!PathHiddenMaterial && !bPathHiddenMaterialFailed)
+	{
+		PathHiddenMaterial = LoadObject<UMaterialInterface>(nullptr, HologramOpacity::HiddenMaterialPath);
+		bPathHiddenMaterialFailed = !PathHiddenMaterial;
+		if (bPathHiddenMaterialFailed)
+		{
+			UE_LOG(LogHologramOpacity, Warning, TEXT("Could not load %s; the icon of a highlighted vehicle path alternates with a question mark"), HologramOpacity::HiddenMaterialPath);
+		}
+	}
+
+	// Not required either: without it the arrows keep their gaps where the hidden icons were
+	if (!PathFilledArrowMaterial && !bPathFilledArrowMaterialFailed)
+	{
+		PathFilledArrowMaterial = LoadObject<UMaterialInterface>(nullptr, HologramOpacity::PathFilledArrowMaterialPath);
+		bPathFilledArrowMaterialFailed = !PathFilledArrowMaterial;
+		if (bPathFilledArrowMaterialFailed)
+		{
+			UE_LOG(LogHologramOpacity, Warning, TEXT("Could not load %s; the arrows of a highlighted vehicle path keep the gaps of its hidden icons"), HologramOpacity::PathFilledArrowMaterialPath);
+		}
+	}
+
+	// Paths no longer highlighted get their materials back
+	const TSet<UMeshComponent*> HighlightedSet(Highlighted);
+	for (auto It = RecolouredPathMeshes.CreateIterator(); It; ++It)
+	{
+		UMeshComponent* Mesh = It.Key().Get();
+		if (!Mesh || !HighlightedSet.Contains(Mesh))
+		{
+			RestorePathMesh(Mesh, It.Value());
+			It.RemoveCurrent();
+		}
+	}
+	if (Highlighted.Num() == 0)
+	{
+		PathMaterials.Reset();
+		return;
+	}
+
+	// The dismantle colour from the Holograms options (or a tuning command) changed: the instances follow
+	if (bPathParametersDirty || !PathColor.Equals(Colors[HologramOpacity::DismantleStateIndex]))
+	{
+		PathColor = Colors[HologramOpacity::DismantleStateIndex];
+		bPathParametersDirty = false;
+		for (const TPair<TObjectPtr<UMaterialInterface>, TObjectPtr<UMaterialInstanceDynamic>>& Pair : PathMaterials)
+		{
+			if (Pair.Value)
+			{
+				ApplyPathParameters(Pair.Value);
+			}
+		}
+	}
+
+	// Only sets a value that differs: the game's own are set when it (re)builds the path's meshes
+	auto SetData = [](UMeshComponent* Mesh, int32 Index, float Value)
+	{
+		const TArray<float>& Data = Mesh->GetCustomPrimitiveData().Data;
+		if (!Data.IsValidIndex(Index) || Data[Index] != Value)
+		{
+			Mesh->SetCustomPrimitiveDataFloat(Index, Value);
+		}
+	};
+	for (UMeshComponent* Mesh : Highlighted)
+	{
+		FHologramOpacityPathMesh& State = RecolouredPathMeshes.FindOrAdd(Mesh);
+		State.Slots.SetNum(Mesh->GetNumMaterials());
+		bool bRecoloured = false;
+		for (int32 Index = 0; Index < State.Slots.Num(); ++Index)
+		{
+			FHologramOpacityPathMesh::FSlot& Slot = State.Slots[Index];
+			UMaterialInterface* Material = Mesh->GetMaterial(Index);
+			if (Slot.bReplaced && IsOwnPathMaterial(Material))
+			{
+				bRecoloured = true;
+				continue;
+			}
+			// New here, or the game put another material in the slot. Someone else's dynamic instance is left alone.
+			Slot.bReplaced = false;
+			if (!Material || Material->IsA<UMaterialInstanceDynamic>())
+			{
+				continue;
+			}
+			// The vehicle icon is hidden: the legacy mode that colours the path would alternate it with a question mark
+			UMaterialInterface* Recoloured = nullptr;
+			if (PathHiddenMaterial && HologramOpacity::IsPathIconMaterial(Material))
+			{
+				Recoloured = PathHiddenMaterial;
+			}
+			else
+			{
+				// With the icon hidden, arrows that leave gaps for it are drawn with the truck path's, which don't
+				const bool bFillGaps = PathHiddenMaterial && PathFilledArrowMaterial && Material->GetFName() == HologramOpacity::PathArrowMaterialName;
+				Recoloured = FindOrCreatePathMaterial(bFillGaps ? PathFilledArrowMaterial.Get() : Material);
+			}
+			if (!Recoloured)
+			{
+				continue;
+			}
+			Slot.Override = Mesh->OverrideMaterials.IsValidIndex(Index) ? Mesh->OverrideMaterials[Index].Get() : nullptr;
+			Slot.bReplaced = true;
+			Mesh->SetMaterial(Index, Recoloured);
+			bRecoloured = true;
+		}
+		// A path that can't be recoloured keeps the game's highlight
+		if (!bRecoloured)
+		{
+			continue;
+		}
+		if (!State.bDataChanged)
+		{
+			const TArray<float>& Data = Mesh->GetCustomPrimitiveData().Data;
+			State.LegacyData = Data.IsValidIndex(HologramOpacity::PathLegacyDataIndex) ? Data[HologramOpacity::PathLegacyDataIndex] : 0.f;
+			State.bDataChanged = true;
+		}
+		// The path's usual drawing instead of the grey band, in the colour parameter the instances hold
+		SetData(Mesh, HologramOpacity::PathDismantleDataIndex, 0.f);
+		SetData(Mesh, HologramOpacity::PathLegacyDataIndex, 1.f);
+		for (const TPair<int32, float>& Override : PathDataOverrides)
+		{
+			SetData(Mesh, Override.Key, Override.Value);
+		}
+	}
+}
+
+UMaterialInstanceDynamic* UHologramOpacitySubsystem::FindOrCreatePathMaterial(UMaterialInterface* Source)
+{
+	if (const TObjectPtr<UMaterialInstanceDynamic>* Found = PathMaterials.Find(Source))
+	{
+		return *Found;
+	}
+	FLinearColor Value;
+	UMaterialInstanceDynamic* Recoloured = nullptr;
+	if (Source->GetVectorParameterValue(FHashedMaterialParameterInfo(HologramOpacity::PathColorParameter), Value))
+	{
+		Recoloured = UMaterialInstanceDynamic::Create(Source, this);
+		ApplyPathParameters(Recoloured);
+	}
+	else
+	{
+		UE_LOG(LogHologramOpacity, Warning, TEXT("Vehicle path material %s has no '%s' parameter; its dismantle highlight stays vanilla"),
+			*Source->GetPathName(), *HologramOpacity::PathColorParameter.ToString());
+	}
+	PathMaterials.Add(Source, Recoloured);
+	return Recoloured;
+}
+
+bool UHologramOpacitySubsystem::IsOwnPathMaterial(const UMaterialInterface* Material) const
+{
+	return Material && (Material == PathHiddenMaterial || Material->GetOuter() == this);
+}
+
+void UHologramOpacitySubsystem::ApplyPathParameters(UMaterialInstanceDynamic* Recoloured) const
+{
+	Recoloured->SetVectorParameterValue(HologramOpacity::PathColorParameter, PathColor);
+	for (const TPair<FName, FLinearColor>& Override : PathVectorOverrides)
+	{
+		Recoloured->SetVectorParameterValue(Override.Key, Override.Value);
+	}
+	for (const TPair<FName, float>& Override : PathScalarOverrides)
+	{
+		Recoloured->SetScalarParameterValue(Override.Key, Override.Value);
+	}
+}
+
+void UHologramOpacitySubsystem::RestorePathMesh(UMeshComponent* Mesh, const FHologramOpacityPathMesh& State) const
+{
+	if (!Mesh)
+	{
+		return;
+	}
+	// Only slots that still hold one of the mod's materials (not what the game has put there since)
+	const int32 NumSlots = FMath::Min(State.Slots.Num(), Mesh->GetNumMaterials());
+	for (int32 Index = 0; Index < NumSlots; ++Index)
+	{
+		if (State.Slots[Index].bReplaced && IsOwnPathMaterial(Mesh->GetMaterial(Index)))
+		{
+			Mesh->SetMaterial(Index, State.Slots[Index].Override.Get());
+		}
+	}
+	// The dismantle value stays cleared: the highlight is over
+	if (State.bDataChanged)
+	{
+		Mesh->SetCustomPrimitiveDataFloat(HologramOpacity::PathLegacyDataIndex, State.LegacyData);
+	}
+}
+
+void UHologramOpacitySubsystem::StopVehiclePaths()
+{
+	for (const TPair<TWeakObjectPtr<UMeshComponent>, FHologramOpacityPathMesh>& Pair : RecolouredPathMeshes)
+	{
+		RestorePathMesh(Pair.Key.Get(), Pair.Value);
+	}
+	RecolouredPathMeshes.Reset();
+	PathMaterials.Reset();
+}
+
+void UHologramOpacitySubsystem::SetPathParameter(FName Parameter, const TArray<float>& Values)
+{
+	if (Values.Num() >= 3)
+	{
+		PathVectorOverrides.Add(Parameter, FLinearColor(Values[0], Values[1], Values[2], Values.IsValidIndex(3) ? Values[3] : 1.f));
+	}
+	else if (Values.Num() > 0)
+	{
+		PathScalarOverrides.Add(Parameter, Values[0]);
+	}
+	bPathParametersDirty = true;
+	UE_LOG(LogHologramOpacity, Display, TEXT("Vehicle path material parameter '%s' set (%d values)"), *Parameter.ToString(), Values.Num());
+}
+
+void UHologramOpacitySubsystem::SetPathData(int32 Index, float Value)
+{
+	PathDataOverrides.Add(Index, Value);
+	UE_LOG(LogHologramOpacity, Display, TEXT("Vehicle path custom primitive data %d = %.3f"), Index, Value);
+}
+
 void UHologramOpacitySubsystem::StopDismantle()
 {
 	for (const TPair<TWeakObjectPtr<AActor>, TArray<FHologramOpacityHiddenInstance>>& Pair : DismantleActors)
@@ -1295,6 +1745,10 @@ void UHologramOpacitySubsystem::Tick(float DeltaTime)
 		}
 	}
 
+	// Vehicle paths highlighted for dismantle are drawn like their build hologram, in the dismantle colour, whatever the
+	// two settings say
+	UpdateVehiclePaths(World);
+
 	const float NewOpacity = ReadOpacitySetting();
 	const bool bNewScanlines = ReadScanlinesSetting();
 	if (!FMath::IsNearlyEqual(NewOpacity, CurrentOpacity, 0.0005f) || bNewScanlines != bShowScanlines)
@@ -1326,7 +1780,8 @@ void UHologramOpacitySubsystem::Tick(float DeltaTime)
 	for (TActorIterator<AFGHologram> It(World); It; ++It)
 	{
 		AFGHologram* Hologram = *It;
-		if (!IsValid(Hologram))
+		// A vehicle path being placed stays as the game draws it
+		if (!IsValid(Hologram) || Hologram->IsA<AFGVehiclePathSegmentHologram>())
 		{
 			continue;
 		}
@@ -1397,6 +1852,7 @@ void UHologramOpacitySubsystem::SetCompositeParameter(FName Parameter, float Val
 void UHologramOpacitySubsystem::DumpState()
 {
 	UE_LOG(LogHologramOpacity, Display, TEXT("==== HologramOpacity dump ===="));
+	HologramOpacity::GDumpedPathMaterials.Reset();
 	FindSettings();
 	struct FNamedSetting
 	{
@@ -1453,6 +1909,7 @@ void UHologramOpacitySubsystem::DumpState()
 			const int32 bCustomDepth = Mesh->bRenderCustomDepth ? 1 : 0;
 			UE_LOG(LogHologramOpacity, Display, TEXT("    comp %s (%s) body %d hidden %d captureOnly %d customDepth %d stencil %d slots %d"), *Mesh->GetName(),
 				*Mesh->GetClass()->GetName(), bBody, bHidden, bCaptureOnly, bCustomDepth, Mesh->CustomDepthStencilValue, Mesh->GetNumMaterials());
+			HologramOpacity::DumpPathMesh(Mesh);
 		}
 	}
 
@@ -1495,6 +1952,8 @@ void UHologramOpacitySubsystem::DumpState()
 	{
 		NumHidden += Pair.Value.Num();
 	}
+	UE_LOG(LogHologramOpacity, Display, TEXT("Vehicle paths: %d recoloured meshes, %d materials, colour %s, icon material %s, arrow material %s"), RecolouredPathMeshes.Num(),
+		PathMaterials.Num(), *PathColor.ToString(), *HologramOpacity::Describe(PathHiddenMaterial), *HologramOpacity::Describe(PathFilledArrowMaterial));
 	UE_LOG(LogHologramOpacity, Display, TEXT("Dismantle: %d actors, %d hidden instances, %d own meshes drawn, %d copies, %d hidden from the main view (controller %s)"),
 		DismantleActors.Num(), NumHidden, ShadowFlags.Num(), InstanceCopies.Num(), MainViewHidden.Num(), *HologramOpacity::Describe(MainViewController.Get()));
 	for (const TPair<TWeakObjectPtr<UPrimitiveComponent>, bool>& Pair : ShadowFlags)

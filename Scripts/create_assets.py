@@ -15,7 +15,13 @@ Creates:
       post process material that draws the captured hologram
   /BuildHologramImprovements/Materials/M_HologramOpacityGlass
       opaque stand-in for glass in the capture of dismantle highlights
+  /BuildHologramImprovements/Materials/M_HologramOpacityHidden
+      draws nothing: hides the icon of a vehicle path highlighted for dismantle
+
+Set HOLOGRAM_OPACITY_ASSETS=hidden to create only that last material and leave the other assets as they are.
 """
+import os
+
 import unreal
 
 MOD = "BuildHologramImprovements"
@@ -45,6 +51,7 @@ SCANLINES_MENU_PRIORITY = 6.75
 CAPTURE_TARGET = "RT_HologramOpacityCapture"
 COMPOSITE_MATERIAL = "M_HologramOpacityComposite"
 GLASS_MATERIAL = "M_HologramOpacityGlass"
+HIDDEN_MATERIAL = "M_HologramOpacityHidden"
 
 
 def log(msg):
@@ -191,6 +198,23 @@ def create_glass_material():
     mel.recompile_material(mat)
     save(mat)
     log("glass material: %d expressions" % mel.get_num_material_expressions(mat))
+
+
+def create_hidden_material():
+    """Draws nothing (masked, everything clipped, so no custom depth either). A vehicle path highlighted for dismantle
+    gets it on its icon: the mod colours the path through the path material's legacy mode, which alternates the
+    vehicle icon with a question mark."""
+    mat = new_material(HIDDEN_MATERIAL)
+    mat.set_editor_property("blend_mode", enum_value(unreal.BlendMode, "BLEND_MASKED"))
+    mat.set_editor_property("shading_model", enum_value(unreal.MaterialShadingModel, "MSM_UNLIT"))
+    # Vehicle paths are spline meshes
+    mat.set_editor_property("used_with_spline_meshes", True)
+    opacity_mask = expr(mat, unreal.MaterialExpressionConstant, -400, 0, r=0.0)
+    if not mel.connect_material_property(opacity_mask, "", unreal.MaterialProperty.MP_OPACITY_MASK):
+        fail("opacity mask connection failed")
+    mel.recompile_material(mat)
+    save(mat)
+    log("hidden material: %d expressions" % mel.get_num_material_expressions(mat))
 
 
 def create_composite_material(capture_target):
@@ -383,6 +407,10 @@ def create_composite_material(capture_target):
 
 
 def main():
+    if os.environ.get("HOLOGRAM_OPACITY_ASSETS", "") == "hidden":
+        create_hidden_material()
+        log("done (hidden material only)")
+        return
     if not eal.does_directory_exist("/" + MOD):
         log("content root /%s not listed yet (it is created with the first asset)" % MOD)
     create_game_feature_data()
@@ -390,6 +418,7 @@ def main():
     create_scanlines_setting()
     create_composite_material(create_capture_target())
     create_glass_material()
+    create_hidden_material()
     log("done")
 
 
