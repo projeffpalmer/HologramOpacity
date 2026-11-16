@@ -60,6 +60,11 @@ struct FHologramOpacityPathMesh
 		bool bReplaced = false;
 	};
 	TArray<FSlot> Slots;
+	/** Custom primitive data indices of its materials' "Dismantle" and "Is Legacy Path" parameters, looked up by name
+	 *  once (INDEX_NONE if there is none) */
+	int32 DismantleIndex = INDEX_NONE;
+	int32 LegacyIndex = INDEX_NONE;
+	bool bResolved = false;
 	/** The mesh's own "Is Legacy Path" custom primitive data, once the mod has changed it */
 	float LegacyData = 0.f;
 	bool bDataChanged = false;
@@ -99,10 +104,11 @@ struct FHologramOpacityPathMesh
  * "Dismantle" custom primitive data on its meshes). The mod, at every setting, clears that value so the path keeps
  * its usual drawing, and colours it with the dismantle colour from the Holograms options: the meshes get dynamic
  * instances of their materials with "Legacy Path Color" set to it, and the "Is Legacy Path" custom primitive data that
- * makes the material use that colour. That legacy mode also alternates a path's vehicle icon with a question mark,
+ * makes the material use that colour (both values' indices are looked up from the material by parameter name). That legacy mode also alternates a path's vehicle icon with a question mark,
  * so the icon's material is swapped for one that draws nothing: a highlighted path has no icon. The arrows of most
  * vehicle types leave gaps for the icons; they are drawn with the truck path's arrow material, which doesn't.
- * Materials and the legacy value are put back when the highlight ends.
+ * Materials and the legacy value are put back when the highlight ends. A path node's other, solid meshes go through
+ * the capture like a building's.
  *
  * (A capture rendered inside the main renderer would be cheaper, but in this game it trips an engine assertion in the
  * Nanite base pass, so the capture runs as its own scene renderer.)
@@ -146,9 +152,6 @@ public:
 	void SetDebugOpacityOverride(float InOpacity);
 	void SetDebugScanlinesOverride(int32 InValue);
 	void SetCompositeParameter(FName Parameter, float Value);
-	/** One value sets a scalar parameter, three a colour, on the instances of highlighted vehicle path materials */
-	void SetPathParameter(FName Parameter, const TArray<float>& Values);
-	void SetPathData(int32 Index, float Value);
 	void DumpState();
 
 private:
@@ -223,9 +226,13 @@ private:
 	bool bPathFilledArrowMaterialFailed = false;
 
 	/** Recoloured instances of vehicle path materials, by the material they were made from (null: it has no colour
-	 *  parameter). Kept while a path is highlighted; the keys keep the original materials alive until they are put back. */
+	 *  parameter). Kept while a path is highlighted. */
 	UPROPERTY(Transient)
 	TMap<TObjectPtr<UMaterialInterface>, TObjectPtr<UMaterialInstanceDynamic>> PathMaterials;
+
+	/** Material overrides the mod took off highlighted vehicle path meshes, kept alive until they are put back */
+	UPROPERTY(Transient)
+	TArray<TObjectPtr<UMaterialInterface>> PathOriginals;
 
 	/** Spawned (transient, never saved) in the current game world. The capture is destroyed again when the game draws
 	 *  holograms itself (100% with scan lines on); the volume stays, switched off. */
@@ -253,11 +260,6 @@ private:
 	TMap<TWeakObjectPtr<UMeshComponent>, FHologramOpacityPathMesh> RecolouredPathMeshes;
 	/** The dismantle colour the instances were last set to */
 	FLinearColor PathColor = FLinearColor::Black;
-	bool bPathParametersDirty = false;
-	/** Values set with HoloOpacity.PathParam and HoloOpacity.PathData, applied on top of the mod's own */
-	TMap<FName, FLinearColor> PathVectorOverrides;
-	TMap<FName, float> PathScalarOverrides;
-	TMap<int32, float> PathDataOverrides;
 
 	/** The two settings, found by StrId once a second; their values are read every frame */
 	TWeakObjectPtr<UFGUserSettingApplyType> OpacitySetting;
